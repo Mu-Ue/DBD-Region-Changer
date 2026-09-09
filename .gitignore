@@ -1,0 +1,20 @@
+# Build artifacts
+*.exe
+*.obj
+*.res
+*.pdb
+*.ilk
+
+# Intermediate compile output (obj/ directory)
+*.obj
+
+# Runtime cache files (user-generated data, not source)
+regions.cache
+
+# Editor / IDE
+.aider*
+
+# Keep app.manifest in resources, exclude all others
+!resources/app.manifest
+*.exe.manifest
+*.verify.exe.manifest
