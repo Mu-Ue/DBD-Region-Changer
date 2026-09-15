@@ -28,9 +28,6 @@ static const COLORREF CLR_MUTED     = RGB(0x9B, 0x9B, 0x9B);
 static const COLORREF CLR_HEADER    = RGB(0x2D, 0x2F, 0x33);
 static const COLORREF CLR_SELECTION = RGB(0x12, 0x3B, 0x55);
 static const COLORREF CLR_HEADER_TEXT = RGB(0xC4, 0xCC, 0xD4);
-static const UINT ID_REFRESH = 1002, ID_APPLY = 1003, ID_LIST = 1001;
-static const UINT_PTR TIMER_SPINNER = 1, TIMER_APPLY_FLASH = 2;
-static const wchar_t* SPINNER_FRAMES[] = { L"\u25D0", L"\u25D3", L"\u25D1", L"\u25D2" };
 
 static void ClearListSelection() {
     if (!g_hList) return;

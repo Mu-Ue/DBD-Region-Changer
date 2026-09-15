@@ -247,19 +247,43 @@ void DetectUnblockedRegions() {
     std::ifstream in(WstringToString(GetHostsPath()), std::ios::binary);
     if (!in) return;
     std::string line;
+    bool inBlock = false;
+    bool foundBlock = false;
     while (std::getline(in, line)) {
         const char* p = line.c_str();
+        // Trim leading whitespace for comparison
         while (*p == ' ' || *p == '\t') ++p;
-        if (*p != '#') continue;
-        ++p;
-        while (*p == ' ' || *p == '\t') ++p;
-        if (strncmp(p, "0.0.0.0", 7) != 0 ||
-            (p[7] != ' ' && p[7] != '\t')) continue;
-        p += 7;
-        while (*p == ' ' || *p == '\t') ++p;
+
+        if (!inBlock) {
+            // Check if we're entering the managed block
+            if (strncmp(p, BLOCK_START, strlen(BLOCK_START)) == 0) {
+                inBlock = true;
+                foundBlock = true;
+            }
+            continue;
+        }
+
+        // We are inside the managed block – check for end marker
+        if (strncmp(p, BLOCK_END, strlen(BLOCK_END)) == 0) {
+            inBlock = false;
+            continue;
+        }
+
+        // Inside block: look for # 0.0.0.0 gamelift-ping.* entries
+        const char* q = line.c_str();
+        while (*q == ' ' || *q == '\t') ++q;
+        if (*q != '#') continue;
+        ++q;
+        while (*q == ' ' || *q == '\t') ++q;
+        if (strncmp(q, "0.0.0.0", 7) != 0 ||
+            (q[7] != ' ' && q[7] != '\t')) continue;
+        q += 7;
+        while (*q == ' ' || *q == '\t') ++q;
         for (int i = 0; i < REGION_COUNT; ++i) {
             std::string host = std::string(HOST_PREFIX) + g_regions[i].code + HOST_SUFFIX;
-            if (HasHostToken(p, host)) g_unblockedRegions[i] = true;
+            if (HasHostToken(q, host)) g_unblockedRegions[i] = true;
         }
     }
+    // If no managed block was found at all, leave g_unblockedRegions as-is
+    // (all false = nothing to restore, user hasn't applied changes yet)
 }

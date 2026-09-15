@@ -51,10 +51,6 @@ LONG g_nextQueueRegion = 0;
 LONG g_nextPingRegion = 0;
 LONG g_refreshGeneration = 0;
 
-static const UINT ID_REFRESH = 1002, ID_APPLY = 1003, ID_LIST = 1001;
-static const UINT_PTR TIMER_SPINNER = 1, TIMER_APPLY_FLASH = 2;
-static const wchar_t* SPINNER_FRAMES[] = { L"\u25D0", L"\u25D3", L"\u25D1", L"\u25D2" }; // spinner frames
-
 // ---------------------------------------------------------------------------
 static std::wstring ToWide(const char* s) {
     if (!s || !*s) return L"";
@@ -457,7 +453,6 @@ void SortByColumn(int col, bool toggle) {
         return wcscmp(g_regions[a].label.c_str(), g_regions[b].label.c_str()) < 0;
     });
 }
-static const int QUEUE_WORKER_COUNT = 1;
 
 struct FetchArgs { HWND hwnd; bool pingWorker; LONG generation; };
 
