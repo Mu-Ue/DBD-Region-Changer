@@ -71,6 +71,20 @@ static void LayoutColumns(HWND hList) {
     ListView_SetColumnWidth(hList, 3, pingW);
 }
 
+// Writes a region's queue/ping cells (columns 1-3) for the given row.
+static void SetMetricCells(HWND hList, int row, const Region& region) {
+    const int values[3] = { region.killerSecs, region.survivorSecs, region.pingMs };
+    for (int col = 1; col <= 3; ++col) {
+        int value = values[col - 1];
+        wchar_t text[24];
+        if (value == METRIC_PENDING) wcscpy_s(text, L"-");
+        else if (value == METRIC_NA) wcscpy_s(text, L"N/A");
+        else if (col == 3) swprintf_s(text, L"%dms", value);
+        else swprintf_s(text, L"%d:%02d", value / 60, value % 60);
+        ListView_SetItemText(hList, row, col, text);
+    }
+}
+
 void PopulateList(HWND hList) {
     g_updatingList = true;
     std::vector<bool> selectedRegions(REGION_COUNT, false);
@@ -94,9 +108,7 @@ void PopulateList(HWND hList) {
         item.pszText = (LPWSTR)g_regions[regionIdx].label.c_str();
         item.lParam = regionIdx;
         ListView_InsertItem(hList, &item);
-        ListView_SetItemText(hList, displayRow, 1, g_regions[regionIdx].killer);
-        ListView_SetItemText(hList, displayRow, 2, g_regions[regionIdx].survivor);
-        ListView_SetItemText(hList, displayRow, 3, g_regions[regionIdx].ping);
+        SetMetricCells(hList, displayRow, g_regions[regionIdx]);
         ListView_SetCheckState(hList, displayRow, g_unblockedRegions[regionIdx]);
         if (selectedRegions[regionIdx]) {
             ListView_SetItemState(hList, displayRow, LVIS_SELECTED, LVIS_SELECTED);
@@ -125,10 +137,8 @@ void UpdateRegionRow(HWND hList, int regionIdx) {
     fi.lParam = regionIdx;
     int row = ListView_FindItem(hList, -1, &fi);
     if (row < 0) return;
-    ListView_SetItemText(hList, row, 1, g_regions[regionIdx].killer);
-    ListView_SetItemText(hList, row, 2, g_regions[regionIdx].survivor);
-    ListView_SetItemText(hList, row, 3, g_regions[regionIdx].ping);
-    
+    SetMetricCells(hList, row, g_regions[regionIdx]);
+
     // Force redraw to ensure colors are applied
     InvalidateRect(hList, nullptr, TRUE);
 }
@@ -425,7 +435,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     // Always show ping color, even when selected
                     if (g_regions[idx].pingMs < 60) cd->clrText = CLR_PING_GOOD;
                     else if (g_regions[idx].pingMs < 100) cd->clrText = CLR_PING_WARN;
-                    else if (g_regions[idx].pingMs != INT_MAX) cd->clrText = CLR_PING_BAD;
+                    else if (g_regions[idx].pingMs < METRIC_NA) cd->clrText = CLR_PING_BAD;
                     else cd->clrText = CLR_MUTED;
                 } else if (selected || isActive) {
                     cd->clrText = CLR_ACCENT;
@@ -463,15 +473,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         for (int idx = 0; idx < REGION_COUNT; ++idx) {
             if (g_regions[idx].online) {
-                wcscpy_s(g_regions[idx].killer, _countof(g_regions[idx].killer),
-                         batch->snapshots[idx].killer);
-                wcscpy_s(g_regions[idx].survivor, _countof(g_regions[idx].survivor),
-                         batch->snapshots[idx].survivor);
                 g_regions[idx].killerSecs = batch->snapshots[idx].killerSecs;
                 g_regions[idx].survivorSecs = batch->snapshots[idx].survivorSecs;
-            } else {
-                wcscpy_s(g_regions[idx].killer, _countof(g_regions[idx].killer), L"-");
-                wcscpy_s(g_regions[idx].survivor, _countof(g_regions[idx].survivor), L"-");
             }
             UpdateRegionRow(g_hList, idx);
         }
@@ -487,15 +490,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         int idx = result->idx;
-        if (result->pingStage) {
-            wcscpy_s(g_regions[idx].ping, 16, result->ping);
-            g_regions[idx].pingMs = result->pingMs;
-        } else {
-            wcscpy_s(g_regions[idx].killer, 24, result->killer);
-            wcscpy_s(g_regions[idx].survivor, 24, result->survivor);
-            g_regions[idx].killerSecs = result->killerSecs;
-            g_regions[idx].survivorSecs = result->survivorSecs;
-        }
+        g_regions[idx].pingMs = result->pingMs;
         delete result;
         UpdateRegionRow(g_hList, idx);
         if (InterlockedCompareExchange(&g_pendingFetches, 0, 0) <= 0) {

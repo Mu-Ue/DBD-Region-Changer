@@ -135,12 +135,9 @@ static std::wstring RegionCachePath() {
 }
 
 static void ResetRegionMetrics(Region& region) {
-    wcscpy_s(region.killer, _countof(region.killer), L"-");
-    wcscpy_s(region.survivor, _countof(region.survivor), L"-");
-    wcscpy_s(region.ping, _countof(region.ping), L"-");
-    region.killerSecs = INT_MAX;
-    region.survivorSecs = INT_MAX;
-    region.pingMs = INT_MAX;
+    region.killerSecs = METRIC_PENDING;
+    region.survivorSecs = METRIC_PENDING;
+    region.pingMs = METRIC_PENDING;
 }
 
 static void BuildRegions(const std::vector<std::pair<std::string, bool>>& entries) {
@@ -251,29 +248,48 @@ void RefreshRegionStatus(HWND hList) {
     PopulateList(hList);
 }
 
-static int ParseDurationSeconds(const wchar_t* s);
+// Finds `"key": { ... }` inside [begin, end) and narrows the range to that
+// object's braces, so later lookups cannot run into a sibling object.
+static bool FindObject(const std::string& body, const std::string& key, size_t& begin, size_t& end) {
+    const std::string quoted = "\"" + key + "\"";
+    for (size_t pos = body.find(quoted, begin); pos < end; pos = body.find(quoted, pos + 1)) {
+        size_t colon = body.find_first_not_of(" \t\r\n", pos + quoted.size());
+        if (colon >= end || body[colon] != ':') continue; // a value, not a key
+        size_t brace = body.find_first_not_of(" \t\r\n", colon + 1);
+        if (brace >= end || body[brace] != '{') continue;
+        int depth = 0;
+        for (size_t i = brace; i < end; ++i) {
+            if (body[i] == '{') ++depth;
+            else if (body[i] == '}' && --depth == 0) {
+                begin = brace;
+                end = i + 1;
+                return true;
+            }
+        }
+        return false;
+    }
+    return false;
+}
 
-static bool ExtractQueueTime(const std::string& body, const char* regionCode,
-                             const char* role, wchar_t* output, size_t outputLength) {
-    std::string region = std::string("\"") + regionCode + "\"";
-    size_t regionPos = body.find(region);
-    if (regionPos == std::string::npos) return false;
-    size_t rolePos = body.find(std::string("\"") + role + "\"", regionPos);
-    if (rolePos == std::string::npos) return false;
-    size_t timePos = body.find("\"time\"", rolePos);
-    if (timePos == std::string::npos) return false;
-    size_t colon = body.find(':', timePos);
-    if (colon == std::string::npos) return false;
-    size_t quote = body.find('"', colon + 1);
-    size_t end = quote == std::string::npos ? std::string::npos : body.find('"', quote + 1);
-    if (end == std::string::npos || end - quote - 1 >= outputLength) return false;
-    std::string seconds = body.substr(quote + 1, end - quote - 1);
-    for (unsigned char ch : seconds) if (ch < '0' || ch > '9') return false;
-    std::wstring value = ToWide(seconds.c_str());
-    unsigned long long total = _wcstoui64(value.c_str(), nullptr, 10);
-    if (total > INT_MAX) return false;
-    swprintf_s(output, outputLength, L"%llu:%02llu", total / 60, total % 60);
-    return true;
+// Reads `"<region>": { "<role>": { "time": "<seconds>" } }`.
+static int ExtractQueueSeconds(const std::string& body, const std::string& regionCode,
+                               const char* role) {
+    size_t begin = 0, end = body.size();
+    if (!FindObject(body, regionCode, begin, end) || !FindObject(body, role, begin, end))
+        return METRIC_NA;
+    size_t timePos = body.find("\"time\"", begin);
+    size_t colon = timePos < end ? body.find_first_not_of(" \t\r\n", timePos + 6) : std::string::npos;
+    if (colon >= end || body[colon] != ':') return METRIC_NA;
+    size_t quote = body.find_first_not_of(" \t\r\n", colon + 1);
+    if (quote >= end || body[quote] != '"') return METRIC_NA;
+    size_t close = body.find('"', quote + 1);
+    if (close >= end || close == quote + 1 || close - quote - 1 > 9) return METRIC_NA;
+    int seconds = 0;
+    for (size_t i = quote + 1; i < close; ++i) {
+        if (body[i] < '0' || body[i] > '9') return METRIC_NA;
+        seconds = seconds * 10 + (body[i] - '0');
+    }
+    return seconds;
 }
 
 static bool ParseQueueResponse(const std::string& body, QueueSnapshot* snapshots) {
@@ -281,70 +297,13 @@ static bool ParseQueueResponse(const std::string& body, QueueSnapshot* snapshots
     bool parsedAny = false;
     for (int i = 0; i < REGION_COUNT; ++i) {
         if (!g_regions[i].online) continue;
-        wchar_t value[24];
-        if (ExtractQueueTime(body, g_regions[i].code.c_str(), "killer", value, _countof(value))) {
-            parsedAny = true;
-            wcscpy_s(snapshots[i].killer, _countof(snapshots[i].killer), value);
-            snapshots[i].killerSecs = ParseDurationSeconds(value);
-        }
-        if (ExtractQueueTime(body, g_regions[i].code.c_str(), "survivor", value, _countof(value))) {
-            parsedAny = true;
-            wcscpy_s(snapshots[i].survivor, _countof(snapshots[i].survivor), value);
-            snapshots[i].survivorSecs = ParseDurationSeconds(value);
-        }
+        snapshots[i].killerSecs = ExtractQueueSeconds(body, g_regions[i].code, "killer");
+        snapshots[i].survivorSecs = ExtractQueueSeconds(body, g_regions[i].code, "survivor");
+        parsedAny |= snapshots[i].killerSecs != METRIC_NA || snapshots[i].survivorSecs != METRIC_NA;
     }
     return parsedAny;
 }
 
-// "5m12s" / "3m" / "45s" / "N/A" -> total seconds. N/A -> INT_MAX (sorts last).
-static int ParseDurationSeconds(const wchar_t* s) {
-    if (!s || !*s || wcscmp(s, L"N/A") == 0) return INT_MAX;
-    const wchar_t* separator = wcschr(s, L':');
-    if (separator) {
-        unsigned long long minutes = 0;
-        unsigned long long seconds = 0;
-        for (const wchar_t* p = s; p < separator; ++p) {
-            if (*p < L'0' || *p > L'9') return INT_MAX;
-            minutes = minutes * 10 + (unsigned long long)(*p - L'0');
-            if (minutes > INT_MAX) return INT_MAX;
-        }
-        if (!separator[1] || separator[2] < L'0' || separator[2] > L'9' ||
-            separator[1] < L'0' || separator[1] > L'9' || separator[3]) return INT_MAX;
-        seconds = (unsigned long long)(separator[1] - L'0') * 10 + (separator[2] - L'0');
-        if (minutes > (INT_MAX - seconds) / 60) return INT_MAX;
-        return (int)(minutes * 60 + seconds);
-    }
-    unsigned long long minutes = 0;
-    unsigned long long seconds = 0;
-    const wchar_t* p = s;
-    bool hasMinutes = false;
-    bool hasSeconds = false;
-    while (*p) {
-        if (*p < L'0' || *p > L'9') return INT_MAX;
-        unsigned long long value = 0;
-        while (*p >= L'0' && *p <= L'9') {
-            value = value * 10 + (unsigned long long)(*p - L'0');
-            if (value > INT_MAX) return INT_MAX;
-            ++p;
-        }
-        if (*p == L'm' && !hasMinutes && !hasSeconds) {
-            minutes = value;
-            hasMinutes = true;
-        } else if (*p == L's' && !hasSeconds) {
-            seconds = value;
-            hasSeconds = true;
-        } else {
-            return INT_MAX;
-        }
-        ++p;
-    }
-    if ((!hasMinutes && !hasSeconds) || minutes > (INT_MAX - seconds) / 60) return INT_MAX;
-    return (int)(minutes * 60 + seconds);
-}
-
-// toggle=true: clicking the same column flips direction (like Explorer);
-// clicking a different column resets to ascending. toggle=false always
-// forces ascending (used for the initial default sort).
 // ---------------------------------------------------------------------------
 // Ping estimation. We can't ping the gamelift-ping hostnames themselves once
 // the hosts file is redirecting most of them to 0.0.0.0 -- instead we ping
@@ -426,6 +385,9 @@ static int MeasurePing(const char* regionCode) {
     return TcpConnectPingAddress((sockaddr*)&tcpAddress, addressLength);
 }
 
+// toggle=true: clicking the same column flips direction (like Explorer);
+// clicking a different column resets to ascending. toggle=false always
+// forces ascending (used for the initial default sort).
 void SortByColumn(int col, bool toggle) {
     if (toggle && col == g_sortColumn) g_sortAscending = !g_sortAscending;
     else g_sortAscending = true;
@@ -445,8 +407,8 @@ void SortByColumn(int col, bool toggle) {
         if (col == 0) return asc ? lessThan(a, b) : lessThan(b, a);
         int aValue = col == 1 ? g_regions[a].killerSecs : col == 2 ? g_regions[a].survivorSecs : g_regions[a].pingMs;
         int bValue = col == 1 ? g_regions[b].killerSecs : col == 2 ? g_regions[b].survivorSecs : g_regions[b].pingMs;
-        if (aValue == INT_MAX || bValue == INT_MAX) {
-            if (aValue != bValue) return aValue != INT_MAX;
+        if (aValue >= METRIC_NA || bValue >= METRIC_NA) { // missing values sort last either way
+            if (aValue != bValue) return aValue < bValue;
         } else if (aValue != bValue) {
             return asc ? aValue < bValue : aValue > bValue;
         }
@@ -518,16 +480,12 @@ static DWORD WINAPI FetchThreadProc(LPVOID param) {
         result->generation = generation;
 
         if (pingWorker) {
-            result->pingStage = true;
             if (!g_regions[idx].online) {
                 delete result;
                 continue;
             }
             int rtt = MeasurePing(g_regions[idx].code.c_str());
-            if (rtt >= 0) {
-                swprintf_s(result->ping, 16, L"%dms", rtt);
-                result->pingMs = rtt;
-            }
+            if (rtt >= 0) result->pingMs = rtt;
             PostFetchResult(hwnd, result, true);
         } else {
             std::wstring queueUrl = std::wstring(QUEUES_URL) + L"?_=" +
@@ -615,7 +573,6 @@ void StartRefresh(HWND hwnd) {
                         delete result;
                         continue;
                     }
-                    result->pingStage = true;
                     PostFetchResult(hwnd, result, true);
                 } else {
                     delete result;

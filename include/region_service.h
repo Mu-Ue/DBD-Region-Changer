@@ -3,22 +3,20 @@
 #include <climits>
 #include <string>
 #include <vector>
+// Metric sentinels. Both sort after every real value.
+constexpr int METRIC_NA      = INT_MAX - 1; // fetched, but no value available
+constexpr int METRIC_PENDING = INT_MAX;     // not fetched yet, or region offline
 struct Region {
     std::string code;   // owns its data -- safe to keep across BuildRegions() rebuilds
     std::wstring label; // ditto
     bool online;
-    wchar_t killer[24];
-    wchar_t survivor[24];
-    wchar_t ping[16] = L"-";
-    int killerSecs = INT_MAX;
-    int survivorSecs = INT_MAX;
-    int pingMs = INT_MAX;
+    int killerSecs = METRIC_PENDING;
+    int survivorSecs = METRIC_PENDING;
+    int pingMs = METRIC_PENDING;
 };
 struct QueueSnapshot {
-    wchar_t killer[24] = L"N/A";
-    wchar_t survivor[24] = L"N/A";
-    int killerSecs = INT_MAX;
-    int survivorSecs = INT_MAX;
+    int killerSecs = METRIC_NA;
+    int survivorSecs = METRIC_NA;
 };
 struct QueueFetchBatch {
     LONG generation;
@@ -27,13 +25,7 @@ struct QueueFetchBatch {
 struct FetchResult {
     int idx;
     LONG generation;
-    bool pingStage = false;
-    wchar_t killer[24] = L"N/A";
-    wchar_t survivor[24] = L"N/A";
-    wchar_t ping[16] = L"N/A";
-    int killerSecs = INT_MAX;
-    int survivorSecs = INT_MAX;
-    int pingMs = INT_MAX;
+    int pingMs = METRIC_NA;
 };
 constexpr UINT WM_APP_REGION_DONE = WM_APP + 1;
 constexpr UINT WM_APP_WORKER_DONE = WM_APP + 2;
