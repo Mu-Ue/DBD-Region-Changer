@@ -37,7 +37,8 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
         windowX, windowY, windowWidth, windowHeight, nullptr, nullptr, hInst, nullptr);
     if (window) {
         BOOL useDarkTitleBar = TRUE;
-        DwmSetWindowAttribute(window, 20, &useDarkTitleBar, sizeof(useDarkTitleBar));
+        DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                              &useDarkTitleBar, sizeof(useDarkTitleBar));
     }
 
     ShowWindow(window, nCmdShow);

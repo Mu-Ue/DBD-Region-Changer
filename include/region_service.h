@@ -26,15 +26,13 @@ constexpr UINT WM_APP_QUEUE_DONE   = WM_APP + 2; // lParam: std::vector<QueueSna
 constexpr UINT WM_APP_PING_DONE    = WM_APP + 3; // wParam: region index, lParam: ms or -1
 extern std::vector<Region> g_regions;
 extern int REGION_COUNT;
-extern int g_pendingFetches, g_completedFetches;
-extern bool g_refreshing, g_updatingList, g_applyFlash;
-extern int g_spinnerFrame;
-extern HWND g_hList, g_hBtnRefresh, g_hBtnApply, g_hwndMain, g_hHeader;
-extern HFONT g_fontUI, g_fontBold;
-extern std::vector<bool> g_unblockedRegions;
-extern std::vector<int> g_order;
-extern int g_sortColumn;
+extern std::vector<bool> g_unblockedRegions;         // checkbox state per region
+extern std::vector<bool> g_originalUnblockedRegions; // what the hosts file holds
+extern std::vector<int> g_order;                     // display row -> region index
+extern int g_sortColumn;                             // 0=region, 1=killer, 2=survivor, 3=ping
 extern bool g_sortAscending;
+extern bool g_refreshing;
+extern int g_completedFetches;
 void InitializeRegions();
 void StartRefresh(HWND hwnd);
 void OnRegionsDiscovered(HWND hwnd, RegionEntries* entries);
@@ -42,8 +40,6 @@ void OnQueueDone(HWND hwnd, std::vector<QueueSnapshot>* snapshots);
 void OnPingDone(HWND hwnd, int idx, int rtt);
 void ShutdownRefresh();
 void SortByColumn(int col, bool toggle);
-void PopulateList(HWND hList);
-void UpdateRegionRow(HWND hList, int regionIdx);
 
 
 

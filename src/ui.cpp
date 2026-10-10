@@ -5,8 +5,6 @@
 #include <windowsx.h>
 #include <commctrl.h>
 #include <uxtheme.h>
-#include <winsock2.h>
-#include <climits>
 #include <string>
 #include <vector>
 #include "region_service.h"
@@ -14,6 +12,14 @@
 #include "ui.h"
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "uxtheme.lib")
+
+HWND g_hList = nullptr, g_hBtnRefresh = nullptr, g_hBtnApply = nullptr;
+static HWND g_hHeader = nullptr;
+static HFONT g_fontUI = nullptr, g_fontBold = nullptr;
+bool g_hasUnappliedChanges = false;
+int g_spinnerFrame = 0;
+static bool g_updatingList = false; // suppresses checkbox notifications while repopulating
+static bool g_applyFlash = false;
 static const COLORREF CLR_BG        = RGB(0x1E, 0x1E, 0x1E);
 static const COLORREF CLR_ACCENT    = RGB(0x3D, 0xB5, 0xF2);
 static const COLORREF CLR_ACCENT_HI = RGB(0x2A, 0x8C, 0xC2);
@@ -127,9 +133,7 @@ void UpdateRegionRow(HWND hList, int regionIdx) {
     int row = ListView_FindItem(hList, -1, &fi);
     if (row < 0) return;
     SetMetricCells(hList, row, g_regions[regionIdx]);
-
-    // Force redraw to ensure colors are applied
-    InvalidateRect(hList, nullptr, TRUE);
+    ListView_RedrawItems(hList, row, row); // ping color depends on the value, not just the text
 }
 
 // Owner-draw: flat rounded buttons.
@@ -267,8 +271,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         SetWindowSubclass(g_hBtnRefresh, ActionButtonSubclassProc, 1, 0);
         SetWindowSubclass(g_hBtnApply, ActionButtonSubclassProc, 1, 0);
 
-        g_order.resize(REGION_COUNT);
-        for (int i = 0; i < REGION_COUNT; ++i) g_order[i] = i;
         SortByColumn(0, false); // default: alphabetical by region (AP, EU, NA, SA...)
 
         DetectUnblockedRegions();
@@ -359,16 +361,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             PopulateList(g_hList);
             InvalidateRect(g_hHeader, nullptr, TRUE);
             return 0;
-        }
-        if (nm->idFrom == ID_LIST && nm->code == NM_CLICK) {
-            NMITEMACTIVATE* click = (NMITEMACTIVATE*)lParam;
-            LVHITTESTINFO hit = {};
-            hit.pt = click->ptAction;
-            int row = ListView_SubItemHitTest(g_hList, &hit);
-            if (row >= 0 && (hit.flags & LVHT_ONITEMSTATEICON)) {
-                ListView_SetItemState(g_hList, -1, 0, LVIS_SELECTED);
-                ListView_SetItemState(g_hList, row, LVIS_SELECTED, LVIS_SELECTED);
-            }
         }
         if (nm->idFrom == ID_LIST && nm->code == LVN_ITEMCHANGED) {
             NMLISTVIEW* lv = (NMLISTVIEW*)lParam;

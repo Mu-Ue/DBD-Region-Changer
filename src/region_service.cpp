@@ -25,21 +25,14 @@ static const wchar_t* QUEUES_URL = L"https://api2.deadbyqueue.com/queues";
 static const wchar_t* REGIONS_URL = L"https://api2.deadbyqueue.com/regions";
 static const wchar_t* REGION_CACHE_NAME = L"regions.cache";
 
-HWND g_hList = nullptr, g_hBtnRefresh = nullptr, g_hBtnApply = nullptr, g_hwndMain = nullptr;
-HFONT g_fontUI = nullptr, g_fontBold = nullptr;
 std::vector<bool> g_unblockedRegions;
-int g_pendingFetches = 0;   // UI thread only: outstanding discovery/queue/ping results
-int g_completedFetches = 0; // UI thread only: pings finished, for the spinner text
-bool g_refreshing = false;
-bool g_updatingList = false;
-bool g_hasUnappliedChanges = false; // Tracks unapplied changes
 std::vector<bool> g_originalUnblockedRegions;
-int g_spinnerFrame = 0;
-bool g_applyFlash = false;
-std::vector<int> g_order;   // display row -> region index, current sort order
-int g_sortColumn = 0;       // 0=region, 1=killer, 2=survivor, 3=ping
+std::vector<int> g_order;
+int g_sortColumn = 0;
 bool g_sortAscending = true;
-HWND g_hHeader = nullptr;
+bool g_refreshing = false;
+int g_completedFetches = 0;        // UI thread only: pings finished, for the spinner text
+static int g_pendingFetches = 0;   // UI thread only: outstanding discovery/queue/ping results
 
 // Background work runs on the system thread pool. Work items receive copies
 // of everything they need and only report back via PostMessage, so the UI
