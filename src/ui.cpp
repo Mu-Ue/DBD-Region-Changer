@@ -5,6 +5,8 @@
 #include <windowsx.h>
 #include <commctrl.h>
 #include <uxtheme.h>
+#include <objidl.h>
+#include <gdiplus.h>
 #include <string>
 #include <vector>
 #include "region_service.h"
@@ -12,6 +14,7 @@
 #include "ui.h"
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "uxtheme.lib")
+#pragma comment(lib, "gdiplus.lib")
 
 HWND g_hList = nullptr, g_hBtnRefresh = nullptr, g_hBtnApply = nullptr;
 static HWND g_hHeader = nullptr;
@@ -26,6 +29,7 @@ static bool g_trackingList = false; // TME_LEAVE requested for the list
 static int g_hoverRow = -1;
 static RECT g_hintRect, g_statusRect, g_listFrame;
 static UINT g_dpi = USER_DEFAULT_SCREEN_DPI;
+static ULONG_PTR g_gdiplusToken = 0;
 
 // Layout metrics at 96 DPI.
 static const int ROW_HEIGHT    = 30;
@@ -100,6 +104,25 @@ static void DrawLabel(HDC hdc, const wchar_t* text, RECT rc, HFONT font, COLORRE
     SetBkMode(hdc, TRANSPARENT);
     DrawTextW(hdc, text, -1, &rc, align | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
     SelectObject(hdc, oldFont);
+}
+
+static Gdiplus::Color ToGdiplus(COLORREF color) {
+    return Gdiplus::Color(GetRValue(color), GetGValue(color), GetBValue(color));
+}
+
+// Anti-aliased progress ring: a quarter arc rotating around a faint track.
+static void DrawSpinner(HDC hdc, int cx, int cy, int radius, int frame) {
+    Gdiplus::Graphics graphics(hdc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    Gdiplus::REAL width = (Gdiplus::REAL)Scale(2);
+    Gdiplus::RectF box((Gdiplus::REAL)(cx - radius), (Gdiplus::REAL)(cy - radius),
+                       (Gdiplus::REAL)(radius * 2), (Gdiplus::REAL)(radius * 2));
+    Gdiplus::Pen track(ToGdiplus(CLR_BORDER), width);
+    graphics.DrawEllipse(&track, box);
+    Gdiplus::Pen arc(ToGdiplus(CLR_ACCENT), width);
+    arc.SetStartCap(Gdiplus::LineCapRound);
+    arc.SetEndCap(Gdiplus::LineCapRound);
+    graphics.DrawArc(&arc, box, (Gdiplus::REAL)(frame * SPINNER_STEP_DEG % 360), 90.0f);
 }
 
 static bool FocusCuesHidden(HWND hwnd) {
@@ -437,12 +460,11 @@ static void PaintStatus(HDC hdc) {
     wchar_t text[128];
     COLORREF color = CLR_MUTED;
     if (g_refreshing && REGION_COUNT == 0) {
-        swprintf_s(text, L"%s  Loading regions\u2026", SPINNER_FRAMES[g_spinnerFrame % 4]);
+        wcscpy_s(text, L"Loading regions\u2026");
     } else if (g_refreshing) {
         int onlineCount = 0;
         for (const Region& region : g_regions) if (region.online) ++onlineCount;
-        swprintf_s(text, L"%s  Refreshing %d/%d\u2026", SPINNER_FRAMES[g_spinnerFrame % 4],
-                   g_completedFetches, onlineCount);
+        swprintf_s(text, L"Refreshing %d/%d\u2026", g_completedFetches, onlineCount);
     } else if (REGION_COUNT == 0) {
         wcscpy_s(text, L"Couldn't load regions. Check your connection and Refresh.");
         color = CLR_WARN;
@@ -460,8 +482,24 @@ static void PaintStatus(HDC hdc) {
     } else {
         swprintf_s(text, L"%d of %d regions allowed", checked, REGION_COUNT);
     }
-    Fill(hdc, g_statusRect, CLR_BG); // the spinner repaints without erasing
-    DrawLabel(hdc, text, g_statusRect, g_fontUI, color, DT_LEFT);
+
+    // Drawn off-screen so the animated spinner does not flicker.
+    RECT rc = { 0, 0, g_statusRect.right - g_statusRect.left, g_statusRect.bottom - g_statusRect.top };
+    HDC mem = CreateCompatibleDC(hdc);
+    HBITMAP bitmap = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
+    HGDIOBJ oldBitmap = SelectObject(mem, bitmap);
+    Fill(mem, rc, CLR_BG);
+    if (g_refreshing) {
+        int radius = Scale(6);
+        DrawSpinner(mem, radius + Scale(1), rc.bottom / 2, radius, g_spinnerFrame);
+        rc.left += radius * 2 + Scale(10);
+    }
+    DrawLabel(mem, text, rc, g_fontUI, color, DT_LEFT);
+    BitBlt(hdc, g_statusRect.left, g_statusRect.top, g_statusRect.right - g_statusRect.left,
+           rc.bottom, mem, 0, 0, SRCCOPY);
+    SelectObject(mem, oldBitmap);
+    DeleteObject(bitmap);
+    DeleteDC(mem);
 }
 
 // Syncs the Apply button and the status line with the current selection.
@@ -494,6 +532,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         InitCommonControlsEx(&icc);
         g_dpi = GetDpiForWindow(hwnd);
         CreateFonts();
+        Gdiplus::GdiplusStartupInput gdiplusInput;
+        Gdiplus::GdiplusStartup(&g_gdiplusToken, &gdiplusInput, nullptr);
         HINSTANCE instance = ((CREATESTRUCTW*)lParam)->hInstance;
 
         // Child windows are positioned by WM_SIZE, which follows WM_CREATE.
@@ -689,6 +729,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (g_fontUI) DeleteObject(g_fontUI);
         if (g_fontBold) DeleteObject(g_fontBold);
         if (g_fontIcon) DeleteObject(g_fontIcon);
+        if (g_gdiplusToken) Gdiplus::GdiplusShutdown(g_gdiplusToken);
         PostQuitMessage(0);
         return 0;
     }

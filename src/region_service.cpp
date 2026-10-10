@@ -470,7 +470,7 @@ void StartRefresh(HWND hwnd) {
     g_spinnerFrame = 0;
     g_completedFetches = 0;
     EnableWindow(g_hBtnRefresh, FALSE);
-    SetTimer(hwnd, TIMER_SPINNER, 120, nullptr);
+    SetTimer(hwnd, TIMER_SPINNER, SPINNER_INTERVAL_MS, nullptr);
 
     for (Region& region : g_regions) ResetRegionMetrics(region);
     PopulateList(g_hList);

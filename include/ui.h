@@ -6,8 +6,9 @@ inline constexpr UINT   ID_APPLY          = 1003;
 inline constexpr UINT   ID_LIST           = 1001;
 inline constexpr UINT_PTR TIMER_SPINNER = 1;
 
-// Spinner display frames
-inline constexpr const wchar_t* SPINNER_FRAMES[] = { L"◐", L"◓", L"◑", L"◒" };
+// Spinner animation: ~30 fps, one turn per second
+inline constexpr UINT SPINNER_INTERVAL_MS = 33;
+inline constexpr int  SPINNER_STEP_DEG    = 12;
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 void PopulateList(HWND hList);
