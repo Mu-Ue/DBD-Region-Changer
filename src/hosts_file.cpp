@@ -1,19 +1,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <shellapi.h>   // for OpenProcessToken, GetTokenInformation
-// fstream already provides wofstream
 #include <string>
 #include <vector>
-#include <locale>
 #include <fstream>
-// Convert a wide string to narrow using Windows API to avoid deprecated codecvt
-static std::string WstringToString(const std::wstring& ws) {
-    if (ws.empty()) return std::string();
-    int size_needed = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), nullptr, 0, nullptr, nullptr);
-    std::string result(size_needed, 0);
-    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), &result[0], size_needed, nullptr, nullptr);
-    return result;
-}
 #include "hosts_file.h"
 #include "region_service.h"
 
@@ -72,36 +61,35 @@ static bool HasHostToken(const char* text, const std::string& host) {
     return false;
 }
 
-static bool IsGameliftLine(const char* line, std::string& bareOut) {
+static bool IsGameliftLine(const char* line) {
     const char* p = line;
     while (*p == ' ' || *p == '\t') ++p;
     if (*p == '#') {
         ++p;
         while (*p == ' ' || *p == '\t') ++p;
     }
-    bareOut = p;
     for (int i = 0; i < REGION_COUNT; ++i) {
         std::string host = std::string(HOST_PREFIX) + g_regions[i].code + HOST_SUFFIX;
-        if (HasHostToken(bareOut.c_str(), host)) return true;
+        if (HasHostToken(p, host)) return true;
     }
     return false;
 }
 
-// Strips \r\n so marker lines can be compared exactly regardless of line ending.
-static std::string TrimEol(const char* line) {
-    std::string t = line;
-    while (!t.empty() && (t.back() == '\n' || t.back() == '\r')) t.pop_back();
-    return t;
+// Strips trailing \r so marker lines compare exactly and repeated CRs from
+// earlier corrupted writes are repaired.
+static void TrimCr(std::string& line) {
+    while (!line.empty() && line.back() == '\r') line.pop_back();
 }
 
-static bool FlushFileToDisk(const wchar_t* path) {
-    HANDLE file = CreateFileW(path, GENERIC_READ | GENERIC_WRITE,
-                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+static bool WriteFileBytes(const wchar_t* path, const std::string& data) {
+    HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
-    bool flushed = FlushFileBuffers(file) != FALSE;
+    DWORD written = 0;
+    bool ok = WriteFile(file, data.data(), (DWORD)data.size(), &written, nullptr) &&
+              written == data.size() && FlushFileBuffers(file);
     CloseHandle(file);
-    return flushed;
+    return ok;
 }
 
 static bool OverwriteFileFromTemp(const wchar_t* tempPath, const wchar_t* targetPath) {
@@ -165,7 +153,7 @@ bool ApplyRegions(const std::vector<bool>& unblocked, std::wstring& errOut) {
         errOut = L"Select at least one region before applying.";
         return false;
     }
-    std::ifstream in(WstringToString(GetHostsPath()), std::ios::binary);
+    std::ifstream in(GetHostsPath().c_str(), std::ios::binary);
     if (!in) {
         errOut = L"Could not open hosts file. Run as Administrator.";
         return false;
@@ -175,16 +163,14 @@ bool ApplyRegions(const std::vector<bool>& unblocked, std::wstring& errOut) {
         std::string line;
         bool inBlock = false;
         while (std::getline(in, line)) {
-            std::string lineWithEol = line + "\n";
-            std::string trimmed = TrimEol(lineWithEol.c_str());
-            if (!inBlock && trimmed == BLOCK_START) { inBlock = true; continue; }
+            TrimCr(line);
+            if (!inBlock && line == BLOCK_START) { inBlock = true; continue; }
             if (inBlock) {
-                if (trimmed == BLOCK_END) inBlock = false;
+                if (line == BLOCK_END) inBlock = false;
                 continue;
             }
-            std::string bare;
-            if (IsGameliftLine(lineWithEol.c_str(), bare)) continue;
-            kept.push_back(std::move(lineWithEol));
+            if (IsGameliftLine(line.c_str())) continue;
+            kept.push_back(std::move(line));
         }
         if (!in.eof()) {
             errOut = L"Could not read hosts file. Run as Administrator.";
@@ -194,7 +180,19 @@ bool ApplyRegions(const std::vector<bool>& unblocked, std::wstring& errOut) {
 
     // Drop trailing blank lines so we control spacing before our block
     // instead of accumulating blank lines from previous runs.
-    while (!kept.empty() && TrimEol(kept.back().c_str()).empty()) kept.pop_back();
+    while (!kept.empty() && kept.back().empty()) kept.pop_back();
+
+    // Lines are kept as raw bytes (the hosts file may contain UTF-8 or ANSI
+    // comments) and written back with CRLF endings.
+    std::string output;
+    for (const auto& l : kept) output += l + "\r\n";
+    output += "\r\n";
+    output += std::string(BLOCK_START) + "\r\n";
+    for (int i = 0; i < REGION_COUNT; ++i) {
+        output += unblocked[i] ? "# 0.0.0.0 " : "0.0.0.0 ";
+        output += HOST_PREFIX + g_regions[i].code + HOST_SUFFIX + "\r\n";
+    }
+    output += std::string(BLOCK_END) + "\r\n";
 
     std::wstring backupPath = GetHostsPath() + L".dbdregionchanger.bak";
     wchar_t tempPath[MAX_PATH] = {};
@@ -202,26 +200,7 @@ bool ApplyRegions(const std::vector<bool>& unblocked, std::wstring& errOut) {
         errOut = L"Could not create temporary hosts file. Run as Administrator.";
         return false;
     }
-    std::wofstream out(tempPath, std::ios::trunc);
-    if (!out) {
-        DeleteFileW(tempPath);
-        errOut = L"Could not write hosts file. Run as Administrator.";
-        return false;
-    }
-    bool writeOk = true;
-    for (const auto& l : kept) out << std::wstring(l.begin(), l.end());
-    out << L"\n";
-    out << L"# --- DBDRegionChanger managed block ---\n";
-    for (int i = 0; i < REGION_COUNT; ++i) {
-        std::wstring host = std::wstring(L"gamelift-ping.") + std::wstring(g_regions[i].code.begin(), g_regions[i].code.end()) + std::wstring(L".api.aws");
-        out << (unblocked[i] ? L"# 0.0.0.0 " : L"0.0.0.0 ") << host << L"\n";
-    }
-    out << L"# --- end DBDRegionChanger managed block ---\n";
-    out.flush();
-    writeOk = out.good();
-    out.close();
-    bool closed = !out.fail();
-    bool flushed = writeOk && closed && FlushFileToDisk(tempPath);
+    bool flushed = WriteFileBytes(tempPath, output);
     DeleteFileW(backupPath.c_str());
     bool backedUp = flushed && CopyFileW(GetHostsPath().c_str(), backupPath.c_str(), FALSE) != FALSE;
     bool replaced = backedUp && OverwriteFileFromTemp(tempPath, GetHostsPath().c_str());
@@ -244,7 +223,7 @@ void DetectUnblockedRegions() {
         return;
     }
     g_unblockedRegions.assign(REGION_COUNT, false);
-    std::ifstream in(WstringToString(GetHostsPath()), std::ios::binary);
+    std::ifstream in(GetHostsPath().c_str(), std::ios::binary);
     if (!in) return;
     std::string line;
     bool inBlock = false;
