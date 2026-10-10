@@ -31,7 +31,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
     // The window opens on the primary monitor, whose DPI is the system DPI.
     const int dpi = (int)GetDpiForSystem();
-    const int windowWidth = MulDiv(520, dpi, USER_DEFAULT_SCREEN_DPI);
+    const int windowWidth = MulDiv(580, dpi, USER_DEFAULT_SCREEN_DPI);
     const int windowHeight = (std::min)(MulDiv(660, dpi, USER_DEFAULT_SCREEN_DPI),
                                         (int)(workArea.bottom - workArea.top));
     int windowX = workArea.left + ((workArea.right - workArea.left) - windowWidth) / 2;

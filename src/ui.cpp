@@ -34,10 +34,15 @@ static ULONG_PTR g_gdiplusToken = 0;
 // Layout metrics at 96 DPI.
 static const int ROW_HEIGHT    = 30;
 static const int HEADER_HEIGHT = 32;
-static const int CHECK_X       = 14; // checkbox inset from the row's left edge
-static const int CHECK_SIZE    = 16;
-static const int LABEL_X       = 40; // region name inset, shared by the header
-static const int CELL_PAD      = 14; // right inset of the numeric columns
+// Every column is laid out the same way: | pad | lane | gap | text | pad |.
+// The lane holds the checkboxes in the region column and the sort arrow in
+// the header, so the region arrow sits right above the checkboxes.
+static const int CELL_PAD      = 14; // inset at both ends of every column
+static const int LANE_SIZE     = 16; // checkbox / sort arrow lane
+static const int LANE_GAP      = 6;  // lane to column text
+static const int LABEL_X       = CELL_PAD + LANE_SIZE + LANE_GAP; // region name inset
+
+static const wchar_t* const COLUMN_TITLES[4] = { L"Region", L"Killer", L"Survivor", L"Ping" };
 
 static const COLORREF CLR_BG             = RGB(0x1E, 0x1E, 0x1E);
 static const COLORREF CLR_SURFACE        = RGB(0x25, 0x25, 0x26);
@@ -139,13 +144,22 @@ static int CheckedCount() {
 static void LayoutColumns(HWND hList) {
     RECT rc; GetClientRect(hList, &rc);
     int total = rc.right - rc.left; // already excludes the scrollbar if one is showing
-    int killerW = Scale(80), survW = Scale(90), pingW = Scale(80);
-    int regionW = total - killerW - survW - pingW;
+    // The numeric columns share one width that fits the widest title.
+    int titleW = 0;
+    HDC hdc = GetDC(hList);
+    HGDIOBJ oldFont = SelectObject(hdc, g_fontBold);
+    for (int col = 1; col < 4; ++col) {
+        SIZE size;
+        GetTextExtentPoint32W(hdc, COLUMN_TITLES[col], (int)wcslen(COLUMN_TITLES[col]), &size);
+        if (size.cx > titleW) titleW = size.cx;
+    }
+    SelectObject(hdc, oldFont);
+    ReleaseDC(hList, hdc);
+    int metricW = Scale(LABEL_X + CELL_PAD) + titleW;
+    int regionW = total - 3 * metricW;
     if (regionW < Scale(120)) regionW = Scale(120);
     ListView_SetColumnWidth(hList, 0, regionW);
-    ListView_SetColumnWidth(hList, 1, killerW);
-    ListView_SetColumnWidth(hList, 2, survW);
-    ListView_SetColumnWidth(hList, 3, pingW);
+    for (int col = 1; col < 4; ++col) ListView_SetColumnWidth(hList, col, metricW);
 }
 
 static void FormatMetric(int value, bool isPing, wchar_t (&text)[24]) {
@@ -228,10 +242,10 @@ static void DrawListRow(const DRAWITEMSTRUCT* dis) {
     Fill(hdc, divider, CLR_DIVIDER);
 
     RECT box;
-    box.left = rc.left + Scale(CHECK_X);
-    box.top = rc.top + (rc.bottom - rc.top - Scale(CHECK_SIZE)) / 2;
-    box.right = box.left + Scale(CHECK_SIZE);
-    box.bottom = box.top + Scale(CHECK_SIZE);
+    box.left = rc.left + Scale(CELL_PAD);
+    box.top = rc.top + (rc.bottom - rc.top - Scale(LANE_SIZE)) / 2;
+    box.right = box.left + Scale(LANE_SIZE);
+    box.bottom = box.top + Scale(LANE_SIZE);
     if (checked) {
         RoundBox(hdc, box, Scale(5), CLR_ACCENT, CLR_ACCENT);
         DrawLabel(hdc, L"\uE73E", box, g_fontIcon, CLR_ON_ACCENT, DT_CENTER); // CheckMark
@@ -242,7 +256,7 @@ static void DrawListRow(const DRAWITEMSTRUCT* dis) {
     int edge[5] = { rc.left };
     for (int col = 0; col < 4; ++col) edge[col + 1] = edge[col] + ListView_GetColumnWidth(g_hList, col);
 
-    RECT label = { rc.left + Scale(LABEL_X), rc.top, edge[1] - Scale(8), rc.bottom };
+    RECT label = { rc.left + Scale(LABEL_X), rc.top, edge[1] - Scale(CELL_PAD), rc.bottom };
     COLORREF labelColor = !region.online ? CLR_MUTED : checked ? CLR_TEXT : CLR_TEXT_DIM;
     DrawLabel(hdc, region.label.c_str(), label, checked ? g_fontBold : g_fontUI, labelColor, DT_LEFT);
 
@@ -345,7 +359,6 @@ static LRESULT CALLBACK ListViewSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
 
 // --- Column header ---------------------------------------------------------
 static void PaintHeader(HWND hwnd, HDC hdc) {
-    static const wchar_t* titles[4] = { L"Region", L"Killer", L"Survivor", L"Ping" };
     RECT client;
     GetClientRect(hwnd, &client);
     Fill(hdc, client, CLR_HEADER);
@@ -356,12 +369,13 @@ static void PaintHeader(HWND hwnd, HDC hdc) {
         bool active = col == g_sortColumn;
         HGDIOBJ oldFont = SelectObject(hdc, g_fontBold);
         SIZE size;
-        GetTextExtentPoint32W(hdc, titles[col], (int)wcslen(titles[col]), &size);
+        GetTextExtentPoint32W(hdc, COLUMN_TITLES[col], (int)wcslen(COLUMN_TITLES[col]), &size);
         SelectObject(hdc, oldFont);
 
         // Titles line up with their column's values: the region name on the
         // left, the numbers on the right. The sort arrow always leads the
-        // title, so it never pushes a title out of line with its values.
+        // title in the lane, LANE_GAP away, so it never pushes a title out of
+        // line with its values.
         RECT text = item, arrow = item;
         if (col == 0) {
             text.left = item.left + Scale(LABEL_X);
@@ -370,9 +384,9 @@ static void PaintHeader(HWND hwnd, HDC hdc) {
             text.right = item.right - Scale(CELL_PAD);
             text.left = text.right - size.cx;
         }
-        arrow.left = text.left - Scale(16);
-        arrow.right = arrow.left + Scale(12);
-        DrawLabel(hdc, titles[col], text, g_fontBold, active ? CLR_TEXT : CLR_HEADER_TEXT, DT_LEFT);
+        arrow.right = text.left - Scale(LANE_GAP);
+        arrow.left = arrow.right - Scale(LANE_SIZE);
+        DrawLabel(hdc, COLUMN_TITLES[col], text, g_fontBold, active ? CLR_TEXT : CLR_HEADER_TEXT, DT_LEFT);
         if (active) {
             DrawLabel(hdc, g_sortAscending ? L"\uE70E" : L"\uE70D", arrow, g_fontIcon, // ChevronUp/Down
                       CLR_ACCENT, DT_CENTER);
@@ -608,7 +622,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return (LRESULT)GetStockObject(DC_BRUSH);
     case WM_GETMINMAXINFO: {
         MINMAXINFO* info = (MINMAXINFO*)lParam;
-        info->ptMinTrackSize.x = Scale(460);
+        info->ptMinTrackSize.x = Scale(540);
         info->ptMinTrackSize.y = Scale(400);
         return 0;
     }
