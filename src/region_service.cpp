@@ -293,9 +293,13 @@ static int IcmpPingAddress(const IN_ADDR& address, DWORD timeoutMs = 1200) {
     return rtt;
 }
 
-static int TcpConnectPingAddress(const sockaddr* address, int addressLength, DWORD timeoutMs = 1200) {
+static int TcpConnectPingAddress(const IN_ADDR& ip, DWORD timeoutMs = 1200) {
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) return -1;
+    sockaddr_in address = {};
+    address.sin_family = AF_INET;
+    address.sin_addr = ip;
+    address.sin_port = htons(443);
 
     u_long nonBlocking = 1;
     ioctlsocket(s, FIONBIO, &nonBlocking);
@@ -307,7 +311,7 @@ static int TcpConnectPingAddress(const sockaddr* address, int addressLength, DWO
     }();
     LARGE_INTEGER t0, t1;
     QueryPerformanceCounter(&t0);
-    connect(s, address, addressLength);
+    connect(s, (const sockaddr*)&address, sizeof(address));
 
     fd_set writeSet, errSet;
     FD_ZERO(&writeSet); FD_SET(s, &writeSet);
@@ -334,16 +338,21 @@ static int MeasurePing(const char* regionCode) {
     if (GetAddrInfoW(host, nullptr, &hints, &res) != 0 || !res) return -1;
 
     IN_ADDR address = ((sockaddr_in*)res->ai_addr)->sin_addr;
-    int addressLength = (int)res->ai_addrlen;
     FreeAddrInfoW(res);
 
-    int rtt = IcmpPingAddress(address);
-    if (rtt >= 0) return rtt;
-    sockaddr_in tcpAddress = {};
-    tcpAddress.sin_family = AF_INET;
-    tcpAddress.sin_addr = address;
-    tcpAddress.sin_port = htons(443);
-    return TcpConnectPingAddress((sockaddr*)&tcpAddress, addressLength);
+    // Best of two samples smooths out one-off spikes. Once ICMP fails, stay
+    // on TCP so a filtered host doesn't cost an ICMP timeout per sample.
+    int best = -1;
+    bool useIcmp = true;
+    for (int sample = 0; sample < 2 && !g_shuttingDown; ++sample) {
+        int rtt = useIcmp ? IcmpPingAddress(address) : -1;
+        if (rtt < 0) {
+            useIcmp = false;
+            rtt = TcpConnectPingAddress(address);
+        }
+        if (rtt >= 0 && (best < 0 || rtt < best)) best = rtt;
+    }
+    return best;
 }
 
 // toggle=true: clicking the same column flips direction (like Explorer);
