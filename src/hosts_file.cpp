@@ -218,10 +218,8 @@ bool ApplyRegions(const std::vector<bool>& unblocked, std::wstring& errOut) {
 }
 
 void DetectUnblockedRegions() {
-    if (!IsRunningAsAdmin()) {
-        // If not admin, we cannot read the hosts file reliably – skip.
-        return;
-    }
+    // Sized before anything can fail: the UI indexes this per region.
+    // Reading the hosts file does not require elevation.
     g_unblockedRegions.assign(REGION_COUNT, false);
     std::ifstream in(SystemPath(L"\\drivers\\etc\\hosts").c_str(), std::ios::binary);
     if (!in) return;
