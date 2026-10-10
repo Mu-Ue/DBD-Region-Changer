@@ -24,6 +24,9 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
     windowClass.hInstance = hInst;
     windowClass.lpszClassName = className;
     windowClass.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    windowClass.hIcon = LoadIconW(hInst, MAKEINTRESOURCEW(1));
+    windowClass.hIconSm = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(1), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
     windowClass.hbrBackground = nullptr;
     RegisterClassExW(&windowClass);
 
