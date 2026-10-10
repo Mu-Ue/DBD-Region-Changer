@@ -7,24 +7,13 @@
 #include "region_service.h"
 
 // ---------------------------------------------------------------------------
-//  Helper to get the full path to the hosts file in a Unicode‑safe way.
+//  Full path of a file under the System32 directory, e.g. L"\\drivers\\etc".
 // ---------------------------------------------------------------------------
-static std::wstring GetHostsPath() {
+static std::wstring SystemPath(const wchar_t* relative) {
     wchar_t sysPath[MAX_PATH] = {};
-    DWORD len = GetSystemDirectoryW(sysPath, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH) return L"C:\\Windows\\System32";
-    std::wstring path = sysPath;
-    path += L"\\drivers\\etc\\hosts";
-    return path;
-}
-
-static std::wstring GetHostsDirPath() {
-    wchar_t sysPath[MAX_PATH] = {};
-    DWORD len = GetSystemDirectoryW(sysPath, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH) return L"C:\\Windows\\System32";
-    std::wstring path = sysPath;
-    path += L"\\drivers\\etc";
-    return path;
+    UINT len = GetSystemDirectoryW(sysPath, MAX_PATH);
+    std::wstring path = (len == 0 || len >= MAX_PATH) ? L"C:\\Windows\\System32" : sysPath;
+    return path + relative;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +142,8 @@ bool ApplyRegions(const std::vector<bool>& unblocked, std::wstring& errOut) {
         errOut = L"Select at least one region before applying.";
         return false;
     }
-    std::ifstream in(GetHostsPath().c_str(), std::ios::binary);
+    std::wstring hostsPath = SystemPath(L"\\drivers\\etc\\hosts");
+    std::ifstream in(hostsPath.c_str(), std::ios::binary);
     if (!in) {
         errOut = L"Could not open hosts file. Run as Administrator.";
         return false;
@@ -176,6 +166,7 @@ bool ApplyRegions(const std::vector<bool>& unblocked, std::wstring& errOut) {
             errOut = L"Could not read hosts file. Run as Administrator.";
             return false;
         }
+        in.close(); // the stream does not share delete access, which ReplaceFileW needs
     }
 
     // Drop trailing blank lines so we control spacing before our block
@@ -194,19 +185,25 @@ bool ApplyRegions(const std::vector<bool>& unblocked, std::wstring& errOut) {
     }
     output += std::string(BLOCK_END) + "\r\n";
 
-    std::wstring backupPath = GetHostsPath() + L".dbdregionchanger.bak";
+    std::wstring backupPath = hostsPath + L".dbdregionchanger.bak";
     wchar_t tempPath[MAX_PATH] = {};
-    if (GetTempFileNameW(GetHostsDirPath().c_str(), L"DBD", 0, tempPath) == 0) {
+    if (GetTempFileNameW(SystemPath(L"\\drivers\\etc").c_str(), L"DBD", 0, tempPath) == 0) {
         errOut = L"Could not create temporary hosts file. Run as Administrator.";
         return false;
     }
-    bool flushed = WriteFileBytes(tempPath, output);
-    DeleteFileW(backupPath.c_str());
-    bool backedUp = flushed && CopyFileW(GetHostsPath().c_str(), backupPath.c_str(), FALSE) != FALSE;
-    bool replaced = backedUp && OverwriteFileFromTemp(tempPath, GetHostsPath().c_str());
+    // ReplaceFileW swaps the files atomically, keeps the hosts file's ACL and
+    // attributes, and writes the backup in the same step. If it fails (e.g.
+    // another process holds the hosts file open), copy the contents in place.
+    bool replaced = false;
+    if (WriteFileBytes(tempPath, output)) {
+        replaced = ReplaceFileW(hostsPath.c_str(), tempPath, backupPath.c_str(),
+                                REPLACEFILE_IGNORE_MERGE_ERRORS, nullptr, nullptr) ||
+                   (CopyFileW(hostsPath.c_str(), backupPath.c_str(), FALSE) &&
+                    OverwriteFileFromTemp(tempPath, hostsPath.c_str()));
+    }
+    DWORD error = GetLastError();
     DeleteFileW(tempPath);
     if (!replaced) {
-        DWORD error = GetLastError();
         wchar_t message[128];
         swprintf_s(message, L"Could not update hosts file (error %lu). Run as Administrator.", error);
         errOut = message;
@@ -223,7 +220,7 @@ void DetectUnblockedRegions() {
         return;
     }
     g_unblockedRegions.assign(REGION_COUNT, false);
-    std::ifstream in(GetHostsPath().c_str(), std::ios::binary);
+    std::ifstream in(SystemPath(L"\\drivers\\etc\\hosts").c_str(), std::ios::binary);
     if (!in) return;
     std::string line;
     bool inBlock = false;
