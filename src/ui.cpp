@@ -20,6 +20,23 @@ bool g_hasUnappliedChanges = false;
 int g_spinnerFrame = 0;
 static bool g_updatingList = false; // suppresses checkbox notifications while repopulating
 static bool g_applyFlash = false;
+static UINT g_dpi = USER_DEFAULT_SCREEN_DPI;
+
+// Converts a 96-DPI layout value to the window's current DPI.
+static int Scale(int value) { return MulDiv(value, (int)g_dpi, USER_DEFAULT_SCREEN_DPI); }
+
+static void CreateFonts() {
+    HFONT oldUI = g_fontUI, oldBold = g_fontBold;
+    g_fontUI = CreateFontW(Scale(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    g_fontBold = CreateFontW(Scale(16), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    if (g_hList) SendMessage(g_hList, WM_SETFONT, (WPARAM)g_fontUI, TRUE);
+    if (oldUI) DeleteObject(oldUI);
+    if (oldBold) DeleteObject(oldBold);
+}
 static const COLORREF CLR_BG        = RGB(0x1E, 0x1E, 0x1E);
 static const COLORREF CLR_ACCENT    = RGB(0x3D, 0xB5, 0xF2);
 static const COLORREF CLR_ACCENT_HI = RGB(0x2A, 0x8C, 0xC2);
@@ -68,9 +85,9 @@ static LRESULT CALLBACK ListViewSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
 static void LayoutColumns(HWND hList) {
     RECT rc; GetClientRect(hList, &rc);
     int total = rc.right - rc.left; // already excludes the scrollbar if one is showing
-    int killerW = 90, survW = 90, pingW = 80;
+    int killerW = Scale(90), survW = Scale(90), pingW = Scale(80);
     int regionW = total - killerW - survW - pingW;
-    if (regionW < 120) regionW = 120;
+    if (regionW < Scale(120)) regionW = Scale(120);
     ListView_SetColumnWidth(hList, 0, regionW);
     ListView_SetColumnWidth(hList, 1, killerW);
     ListView_SetColumnWidth(hList, 2, survW);
@@ -153,7 +170,7 @@ static void DrawFlatButton(LPDRAWITEMSTRUCT dis, const wchar_t* text, bool prima
     HPEN pen = CreatePen(PS_SOLID, 1, primary ? fill : CLR_BORDER);
     HBRUSH oldBr = (HBRUSH)SelectObject(hdc, br);
     HPEN oldPen = (HPEN)SelectObject(hdc, pen);
-    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 8, 8);
+    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, Scale(8), Scale(8));
     SelectObject(hdc, oldBr); SelectObject(hdc, oldPen);
     DeleteObject(br); DeleteObject(pen);
 
@@ -174,7 +191,7 @@ static void PaintHeaderItem(HDC hdc, const RECT& item, int col) {
         RECT indicator = item;
         indicator.left += 1;
         indicator.right -= 1;
-        indicator.top = indicator.bottom - 3;
+        indicator.top = indicator.bottom - Scale(3);
         HBRUSH accent = CreateSolidBrush(CLR_ACCENT);
         FillRect(hdc, &indicator, accent);
         DeleteObject(accent);
@@ -184,8 +201,8 @@ static void PaintHeaderItem(HDC hdc, const RECT& item, int col) {
     const wchar_t* arrow = active ? (g_sortAscending ? L"  \u25B2" : L"  \u25BC") : L"";
     swprintf_s(text, L"%s%s", titles[col], arrow);
     RECT textRect = item;
-    textRect.left += 10;
-    textRect.right -= 8;
+    textRect.left += Scale(10);
+    textRect.right -= Scale(8);
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, active ? CLR_ACCENT : CLR_HEADER_TEXT);
     SelectObject(hdc, g_fontBold);
@@ -230,19 +247,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CREATE: {
         InitCommonControls();
-        g_fontUI = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-        g_fontBold = CreateFontW(16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        g_dpi = GetDpiForWindow(hwnd);
+        CreateFonts();
 
-        RECT client; GetClientRect(hwnd, &client);
-        int w = client.right - client.left;
-
+        // Child windows are positioned by WM_SIZE, which follows WM_CREATE.
         g_hList = CreateWindowExW(0, WC_LISTVIEWW, L"",
             WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS,
-            12, 12, w - 24, 340, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_LIST)), GetModuleHandle(nullptr), nullptr);
+            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_LIST)), GetModuleHandle(nullptr), nullptr);
         ListView_SetExtendedListViewStyle(g_hList, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_CHECKBOXES);
         SetWindowTheme(g_hList, L"", L"");
         SendMessage(g_hList, WM_SETFONT, (WPARAM)g_fontUI, TRUE);
@@ -264,10 +275,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         g_hBtnRefresh = CreateWindowW(L"BUTTON", L"Refresh",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            12, 364, 140, 34, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_REFRESH)), GetModuleHandle(nullptr), nullptr);
+            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_REFRESH)), GetModuleHandle(nullptr), nullptr);
         g_hBtnApply = CreateWindowW(L"BUTTON", L"Apply Checked Regions",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            160, 364, 200, 34, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_APPLY)), GetModuleHandle(nullptr), nullptr);
+            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_APPLY)), GetModuleHandle(nullptr), nullptr);
         SetWindowSubclass(g_hBtnRefresh, ActionButtonSubclassProc, 1, 0);
         SetWindowSubclass(g_hBtnApply, ActionButtonSubclassProc, 1, 0);
 
@@ -289,21 +300,36 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
     case WM_GETMINMAXINFO: {
         MINMAXINFO* info = (MINMAXINFO*)lParam;
-        info->ptMinTrackSize.x = 480;
-        info->ptMinTrackSize.y = 450;
+        info->ptMinTrackSize.x = Scale(480);
+        info->ptMinTrackSize.y = Scale(450);
         return 0;
     }
     case WM_SIZE: {
         int width = LOWORD(lParam);
         int height = HIWORD(lParam);
-        int buttonY = height - 46;
-        int listHeight = buttonY - 24;
+        int margin = Scale(12);
+        int buttonH = Scale(34);
+        int buttonY = height - margin - buttonH;
+        int refreshW = Scale(140);
         if (g_hList) {
-            MoveWindow(g_hList, 12, 12, width - 24, listHeight, TRUE);
+            MoveWindow(g_hList, margin, margin, width - 2 * margin, buttonY - 2 * margin, TRUE);
             LayoutColumns(g_hList);
         }
-        if (g_hBtnRefresh) MoveWindow(g_hBtnRefresh, 12, buttonY, 140, 34, TRUE);
-        if (g_hBtnApply) MoveWindow(g_hBtnApply, 160, buttonY, width - 172, 34, TRUE);
+        if (g_hBtnRefresh) MoveWindow(g_hBtnRefresh, margin, buttonY, refreshW, buttonH, TRUE);
+        if (g_hBtnApply) {
+            int applyX = margin + refreshW + Scale(8);
+            MoveWindow(g_hBtnApply, applyX, buttonY, width - applyX - margin, buttonH, TRUE);
+        }
+        return 0;
+    }
+    case WM_DPICHANGED: {
+        g_dpi = HIWORD(wParam);
+        CreateFonts();
+        const RECT* suggested = (const RECT*)lParam;
+        SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
+                     suggested->right - suggested->left, suggested->bottom - suggested->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE); // triggers WM_SIZE -> relayout
+        InvalidateRect(hwnd, nullptr, TRUE);
         return 0;
     }
     case WM_DRAWITEM: {

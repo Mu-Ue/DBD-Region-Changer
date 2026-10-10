@@ -28,8 +28,10 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
 
     RECT workArea = {};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
-    const int windowWidth = 480;
-    const int windowHeight = 450;
+    // The window opens on the primary monitor, whose DPI is the system DPI.
+    const int dpi = (int)GetDpiForSystem();
+    const int windowWidth = MulDiv(480, dpi, USER_DEFAULT_SCREEN_DPI);
+    const int windowHeight = MulDiv(450, dpi, USER_DEFAULT_SCREEN_DPI);
     int windowX = workArea.left + ((workArea.right - workArea.left) - windowWidth) / 2;
     int windowY = workArea.top + ((workArea.bottom - workArea.top) - windowHeight) / 2;
     HWND window = CreateWindowExW(0, className, L"DBD Region Changer",
