@@ -20,7 +20,9 @@ if errorlevel 1 (
       echo Install Visual Studio Build Tools with the C++ desktop workload.
       goto :err
    )
-   call "!VSINSTALL!\Common7\Tools\VsDevCmd.bat" -arch=x64
+   REM VsDevCmd runs a bare "vswhere.exe", so its folder must be on PATH.
+   for %%D in ("!VSWHERE!") do set "PATH=%%~dpD;!PATH!"
+   call "!VSINSTALL!\Common7\Tools\VsDevCmd.bat" -arch=x64 -no_logo
    if errorlevel 1 goto :err
 )
 
