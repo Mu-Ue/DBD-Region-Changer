@@ -1,6 +1,10 @@
+<p align="center"><img src="docs/icon.png" width="96" alt="icon"></p>
+
 # DBD Region Changer
 
 A lightweight Windows desktop tool for changing your Dead by Daylight server region.
+
+![Screenshot](docs/screenshot.png)
 
 ## Requirements
 
