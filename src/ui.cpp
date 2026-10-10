@@ -360,17 +360,17 @@ static void PaintHeader(HWND hwnd, HDC hdc) {
         SelectObject(hdc, oldFont);
 
         // Titles line up with their column's values: the region name on the
-        // left, the numbers on the right. The sort arrow sits on the far side.
+        // left, the numbers on the right. The sort arrow always leads the
+        // title, so it never pushes a title out of line with its values.
         RECT text = item, arrow = item;
         if (col == 0) {
             text.left = item.left + Scale(LABEL_X);
             text.right = text.left + size.cx;
-            arrow.left = text.right + Scale(4);
         } else {
             text.right = item.right - Scale(CELL_PAD);
             text.left = text.right - size.cx;
-            arrow.left = text.left - Scale(16);
         }
+        arrow.left = text.left - Scale(16);
         arrow.right = arrow.left + Scale(12);
         DrawLabel(hdc, titles[col], text, g_fontBold, active ? CLR_TEXT : CLR_HEADER_TEXT, DT_LEFT);
         if (active) {
