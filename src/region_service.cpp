@@ -347,11 +347,10 @@ static int MeasurePing(const char* regionCode) {
 }
 
 // toggle=true: clicking the same column flips direction (like Explorer);
-// clicking a different column resets to ascending. toggle=false always
-// forces ascending (used for the initial default sort).
+// clicking a different column resets to ascending. toggle=false re-applies
+// the column with the current direction (e.g. after new data arrived).
 void SortByColumn(int col, bool toggle) {
-    if (toggle && col == g_sortColumn) g_sortAscending = !g_sortAscending;
-    else g_sortAscending = true;
+    if (toggle) g_sortAscending = col != g_sortColumn || !g_sortAscending;
     g_sortColumn = col;
 
     auto lessThan = [col](int a, int b) {
@@ -429,6 +428,10 @@ static void CALLBACK PingWork(PTP_CALLBACK_INSTANCE, void* context) {
 static void FinishFetch(HWND hwnd) {
     if (--g_pendingFetches > 0) return;
     g_refreshing = false;
+    if (g_sortColumn != 0) { // rows were placed before their values arrived
+        SortByColumn(g_sortColumn, false);
+        PopulateList(g_hList);
+    }
     KillTimer(hwnd, TIMER_SPINNER);
     EnableWindow(g_hBtnRefresh, TRUE);
     InvalidateRect(g_hBtnRefresh, nullptr, TRUE);
