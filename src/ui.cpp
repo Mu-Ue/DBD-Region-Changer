@@ -319,10 +319,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (dis->CtlID == ID_REFRESH) {
             wchar_t buf[32];
             if (g_refreshing) {
-                LONG completed = InterlockedCompareExchange(&g_completedFetches, 0, 0);
-                LONG onlineCount = 0;
+                int onlineCount = 0;
                 for (const Region& region : g_regions) if (region.online) ++onlineCount;
-                swprintf_s(buf, L"%s Refreshing %ld/%ld", SPINNER_FRAMES[g_spinnerFrame % 4], completed, onlineCount);
+                swprintf_s(buf, L"%s Refreshing %d/%d", SPINNER_FRAMES[g_spinnerFrame % 4],
+                           g_completedFetches, onlineCount);
             }
             else wcscpy_s(buf, L"Refresh");
             DrawFlatButton(dis, buf, false);
@@ -462,60 +462,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         return 0;
     }
-    case WM_APP_QUEUE_DONE: {
-        QueueFetchBatch* batch = (QueueFetchBatch*)lParam;
-        if (!batch) return 0;
-        LONG currentGeneration = InterlockedCompareExchange(&g_refreshGeneration, 0, 0);
-        if (batch->generation != currentGeneration ||
-            (int)batch->snapshots.size() != REGION_COUNT) {
-            delete batch;
-            return 0;
-        }
-        for (int idx = 0; idx < REGION_COUNT; ++idx) {
-            if (g_regions[idx].online) {
-                g_regions[idx].killerSecs = batch->snapshots[idx].killerSecs;
-                g_regions[idx].survivorSecs = batch->snapshots[idx].survivorSecs;
-            }
-            UpdateRegionRow(g_hList, idx);
-        }
-        delete batch;
+    case WM_APP_REGIONS_DONE:
+        OnRegionsDiscovered(hwnd, (RegionEntries*)lParam);
         return 0;
-    }
-    case WM_APP_REGION_DONE: {
-        FetchResult* result = (FetchResult*)lParam;
-        if (!result) return 0;
-        LONG currentGeneration = InterlockedCompareExchange(&g_refreshGeneration, 0, 0);
-        if (result->generation != currentGeneration) {
-            delete result;
-            return 0;
-        }
-        int idx = result->idx;
-        g_regions[idx].pingMs = result->pingMs;
-        delete result;
-        UpdateRegionRow(g_hList, idx);
-        if (InterlockedCompareExchange(&g_pendingFetches, 0, 0) <= 0) {
-            g_refreshing = false;
-            if (InterlockedCompareExchange(&g_activeWorkers, 0, 0) == 0) {
-                CloseWorkerHandles();
-                if (g_wsaStarted) {
-                    WSACleanup();
-                    g_wsaStarted = false;
-                }
-            }
-            KillTimer(hwnd, TIMER_SPINNER);
-            EnableWindow(g_hBtnRefresh, TRUE);
-            InvalidateRect(g_hBtnRefresh, nullptr, TRUE);
-        }
+    case WM_APP_QUEUE_DONE:
+        OnQueueDone(hwnd, (std::vector<QueueSnapshot>*)lParam);
         return 0;
-    }
-    case WM_APP_WORKER_DONE:
-        if (!g_refreshing && InterlockedCompareExchange(&g_activeWorkers, 0, 0) == 0) {
-            CloseWorkerHandles();
-            if (g_wsaStarted) {
-                WSACleanup();
-                g_wsaStarted = false;
-            }
-        }
+    case WM_APP_PING_DONE:
+        OnPingDone(hwnd, (int)wParam, (int)lParam);
         return 0;
     case WM_TIMER: {
         if (wParam == TIMER_SPINNER) {
@@ -532,19 +486,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (g_hBtnRefresh) RemoveWindowSubclass(g_hBtnRefresh, ActionButtonSubclassProc, 1);
         if (g_hBtnApply) RemoveWindowSubclass(g_hBtnApply, ActionButtonSubclassProc, 1);
         if (g_hHeader) RemoveWindowSubclass(g_hHeader, HeaderSubclassProc, 1);
-        if (g_cancelEvent) {
-            SetEvent(g_cancelEvent);
-            for (int i = 0; i < g_workerCount; ++i) {
-                if (g_workerHandles[i]) WaitForSingleObject(g_workerHandles[i], INFINITE);
-            }
-            CloseWorkerHandles();
-            CloseHandle(g_cancelEvent);
-            g_cancelEvent = nullptr;
-        }
-        if (g_wsaStarted) {
-            WSACleanup();
-            g_wsaStarted = false;
-        }
+        ShutdownRefresh();
         if (g_fontUI) DeleteObject(g_fontUI);
         if (g_fontBold) DeleteObject(g_fontBold);
         PostQuitMessage(0);

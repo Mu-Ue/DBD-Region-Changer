@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define UNICODE
 #define _UNICODE
+#include <winsock2.h>
 #include <windows.h>
 #include <dwmapi.h>
 
@@ -11,6 +12,8 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
     // The process runs elevated, so never load DLLs from the app directory
     // (typically Downloads). Covers the delay-loaded network DLLs.
     SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
+    WSADATA wsaData;
+    bool wsaStarted = WSAStartup(MAKEWORD(2, 2), &wsaData) == 0;
     InitializeRegions();
 
     const wchar_t* className = L"DBDRegionChangerWnd2";
@@ -44,5 +47,6 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
         TranslateMessage(&message);
         DispatchMessage(&message);
     }
+    if (wsaStarted) WSACleanup();
     return 0;
 }

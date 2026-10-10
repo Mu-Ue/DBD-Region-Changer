@@ -7,6 +7,7 @@
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
 #include <icmpapi.h>
+#include <atomic>
 #include <cstdio>
 #include <fstream>
 #include <string>
@@ -14,28 +15,23 @@
 #include <algorithm>
 #include <climits>
 #include "region_service.h"
+#include "hosts_file.h"
 #include "ui.h"
 std::vector<Region> g_regions;
 int REGION_COUNT = 0;
 
-static const char*  HOSTS_PATH  = "C:\\Windows\\System32\\drivers\\etc\\hosts";
-static const char*  HOSTS_DIR   = "C:\\Windows\\System32\\drivers\\etc";
-static const char*  HOST_PREFIX = "gamelift-ping.";
-static const char*  HOST_SUFFIX = ".api.aws";
 static const size_t MAX_HTTP_BODY = 64 * 1024;
 static const wchar_t* QUEUES_URL = L"https://api2.deadbyqueue.com/queues";
 static const wchar_t* REGIONS_URL = L"https://api2.deadbyqueue.com/regions";
-static const char* REGION_CACHE_NAME = "regions.cache";
+static const wchar_t* REGION_CACHE_NAME = L"regions.cache";
 
 HWND g_hList = nullptr, g_hBtnRefresh = nullptr, g_hBtnApply = nullptr, g_hwndMain = nullptr;
 HFONT g_fontUI = nullptr, g_fontBold = nullptr;
 std::vector<bool> g_unblockedRegions;
-LONG g_pendingFetches = 0;
-LONG g_completedFetches = 0;
-LONG g_activeWorkers = 0;
+int g_pendingFetches = 0;   // UI thread only: outstanding discovery/queue/ping results
+int g_completedFetches = 0; // UI thread only: pings finished, for the spinner text
 bool g_refreshing = false;
 bool g_updatingList = false;
-bool g_wsaStarted = false;
 bool g_hasUnappliedChanges = false; // Tracks unapplied changes
 std::vector<bool> g_originalUnblockedRegions;
 int g_spinnerFrame = 0;
@@ -44,12 +40,14 @@ std::vector<int> g_order;   // display row -> region index, current sort order
 int g_sortColumn = 0;       // 0=region, 1=killer, 2=survivor, 3=ping
 bool g_sortAscending = true;
 HWND g_hHeader = nullptr;
-HANDLE g_cancelEvent = nullptr;
-std::vector<HANDLE> g_workerHandles;
-int g_workerCount = 0;
-LONG g_nextQueueRegion = 0;
-LONG g_nextPingRegion = 0;
-LONG g_refreshGeneration = 0;
+
+// Background work runs on the system thread pool. Work items receive copies
+// of everything they need and only report back via PostMessage, so the UI
+// thread can rebuild g_regions without racing them.
+static PTP_CLEANUP_GROUP g_workGroup = nullptr;
+static TP_CALLBACK_ENVIRON g_workEnv;
+static HINTERNET g_internet = nullptr; // closing it aborts in-flight requests
+static std::atomic<bool> g_shuttingDown{ false };
 
 // ---------------------------------------------------------------------------
 static std::wstring ToWide(const char* s) {
@@ -62,13 +60,12 @@ static std::wstring ToWide(const char* s) {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP GET via WinINet. No exceptions, no <string> heap churn beyond result.
+// HTTP GET via WinINet on the shared session. Returns "" on any failure.
 // ---------------------------------------------------------------------------
-static std::string HttpGet(HINTERNET hInternet, const wchar_t* url) {
+static std::string HttpGet(const wchar_t* url) {
     std::string result;
-    result.reserve(256);
-    if (!hInternet) return result;
-    HINTERNET hUrl = InternetOpenUrlW(hInternet, url, nullptr, 0,
+    if (!g_internet || g_shuttingDown) return result;
+    HINTERNET hUrl = InternetOpenUrlW(g_internet, url, nullptr, 0,
         INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_NO_AUTO_REDIRECT |
         INTERNET_FLAG_PRAGMA_NOCACHE | INTERNET_FLAG_SECURE, 0);
     if (hUrl) {
@@ -82,11 +79,10 @@ static std::string HttpGet(HINTERNET hInternet, const wchar_t* url) {
                            &contentLength, &contentLengthSize, nullptr) ||
                    contentLength <= MAX_HTTP_BODY;
         if (validStatus && validLength) {
-            char buf[1024]; DWORD bytesRead = 0;
+            char buf[4096]; DWORD bytesRead = 0;
             while (result.size() < MAX_HTTP_BODY &&
                    InternetReadFile(hUrl, buf,
-                       (DWORD)((MAX_HTTP_BODY - result.size()) < sizeof(buf) ?
-                           (MAX_HTTP_BODY - result.size()) : sizeof(buf)), &bytesRead) &&
+                       (DWORD)(std::min)(MAX_HTTP_BODY - result.size(), sizeof(buf)), &bytesRead) &&
                    bytesRead > 0)
                 result.append(buf, bytesRead);
             if (result.size() >= MAX_HTTP_BODY) result.clear();
@@ -128,10 +124,10 @@ static bool IsRegionCode(const std::string& code) {
 static std::wstring RegionCachePath() {
     wchar_t path[MAX_PATH] = {};
     DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
-    if (!length || length >= MAX_PATH) return ToWide(REGION_CACHE_NAME);
+    if (!length || length >= MAX_PATH) return REGION_CACHE_NAME;
     wchar_t* slash = wcsrchr(path, L'\\');
     if (slash) *(slash + 1) = L'\0';
-    return std::wstring(path) + ToWide(REGION_CACHE_NAME);
+    return std::wstring(path) + REGION_CACHE_NAME;
 }
 
 static void ResetRegionMetrics(Region& region) {
@@ -140,7 +136,7 @@ static void ResetRegionMetrics(Region& region) {
     region.pingMs = METRIC_PENDING;
 }
 
-static void BuildRegions(const std::vector<std::pair<std::string, bool>>& entries) {
+static void BuildRegions(const RegionEntries& entries) {
     g_regions.clear();
     g_regions.reserve(entries.size());
     for (const auto& entry : entries) {
@@ -154,9 +150,11 @@ static void BuildRegions(const std::vector<std::pair<std::string, bool>>& entrie
         g_regions.push_back(std::move(region));
     }
     REGION_COUNT = (int)g_regions.size();
+    g_order.resize(REGION_COUNT);
+    for (int i = 0; i < REGION_COUNT; ++i) g_order[i] = i;
 }
 
-static bool LoadRegionCache(std::vector<std::pair<std::string, bool>>& entries) {
+static bool LoadRegionCache(RegionEntries& entries) {
     std::ifstream file(RegionCachePath(), std::ios::binary);
     if (!file) return false;
     std::string line;
@@ -174,21 +172,14 @@ static bool LoadRegionCache(std::vector<std::pair<std::string, bool>>& entries) 
     return !file.bad() && !entries.empty() && entries.size() <= 128;
 }
 
-static void SaveRegionCache(const std::vector<std::pair<std::string, bool>>& entries) {
+static void SaveRegionCache(const RegionEntries& entries) {
     std::ofstream file(RegionCachePath(), std::ios::binary | std::ios::trunc);
     if (!file) return;
     for (const auto& entry : entries) file << entry.first << '\t' << (entry.second ? '1' : '0') << '\n';
 }
 
-static bool DiscoverRegions(std::vector<std::pair<std::string, bool>>& entries) {
-    HINTERNET internet = InternetOpenW(L"DBDRegionChanger/2.0", INTERNET_OPEN_TYPE_PRECONFIG,
-                                       nullptr, nullptr, 0);
-    if (!internet) return false;
-    DWORD timeoutMs = 6000;
-    InternetSetOptionW(internet, INTERNET_OPTION_CONNECT_TIMEOUT, &timeoutMs, sizeof(timeoutMs));
-    InternetSetOptionW(internet, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeoutMs, sizeof(timeoutMs));
-    std::string body = HttpGet(internet, REGIONS_URL);
-    InternetCloseHandle(internet);
+static bool DiscoverRegions(RegionEntries& entries) {
+    std::string body = HttpGet(REGIONS_URL);
     size_t regionsPos = body.find("\"regions\"");
     size_t cursor = regionsPos == std::string::npos ? std::string::npos : body.find('{', regionsPos);
     if (cursor == std::string::npos) return false;
@@ -209,43 +200,12 @@ static bool DiscoverRegions(std::vector<std::pair<std::string, bool>>& entries) 
     return !entries.empty() && entries.size() <= 128;
 }
 
-void SortByColumn(int col, bool toggle);
-void PopulateList(HWND hList);
-
+// Startup uses the cached region list so the window appears immediately;
+// the first refresh then discovers the live list in the background.
 void InitializeRegions() {
-    std::vector<std::pair<std::string, bool>> entries;
-    if (DiscoverRegions(entries)) {
-        SaveRegionCache(entries);
-    } else {
-        entries.clear();
-        LoadRegionCache(entries);
-    }
+    RegionEntries entries;
+    LoadRegionCache(entries);
     BuildRegions(entries);
-}
-
-void RefreshRegionStatus(HWND hList) {
-    std::vector<std::pair<std::string, bool>> entries;
-    if (!DiscoverRegions(entries)) return;
-
-    std::vector<std::pair<std::string, bool>> previous;
-    for (int i = 0; i < REGION_COUNT; ++i) {
-        previous.emplace_back(g_regions[i].code, g_unblockedRegions[i]);
-    }
-    SaveRegionCache(entries);
-    BuildRegions(entries);
-    g_unblockedRegions.assign(REGION_COUNT, false);
-    for (int i = 0; i < REGION_COUNT; ++i) {
-        for (const auto& oldRegion : previous) {
-            if (oldRegion.first == g_regions[i].code) {
-                g_unblockedRegions[i] = oldRegion.second;
-                break;
-            }
-        }
-    }
-    g_order.resize(REGION_COUNT);
-    for (int i = 0; i < REGION_COUNT; ++i) g_order[i] = i;
-    SortByColumn(g_sortColumn, false);
-    PopulateList(hList);
 }
 
 // Finds `"key": { ... }` inside [begin, end) and narrows the range to that
@@ -292,13 +252,14 @@ static int ExtractQueueSeconds(const std::string& body, const std::string& regio
     return seconds;
 }
 
-static bool ParseQueueResponse(const std::string& body, QueueSnapshot* snapshots) {
+static bool ParseQueueResponse(const std::string& body, const RegionEntries& regions,
+                               std::vector<QueueSnapshot>& snapshots) {
     if (body.empty()) return false;
     bool parsedAny = false;
-    for (int i = 0; i < REGION_COUNT; ++i) {
-        if (!g_regions[i].online) continue;
-        snapshots[i].killerSecs = ExtractQueueSeconds(body, g_regions[i].code, "killer");
-        snapshots[i].survivorSecs = ExtractQueueSeconds(body, g_regions[i].code, "survivor");
+    for (size_t i = 0; i < regions.size(); ++i) {
+        if (!regions[i].second) continue;
+        snapshots[i].killerSecs = ExtractQueueSeconds(body, regions[i].first, "killer");
+        snapshots[i].survivorSecs = ExtractQueueSeconds(body, regions[i].first, "survivor");
         parsedAny |= snapshots[i].killerSecs != METRIC_NA || snapshots[i].survivorSecs != METRIC_NA;
     }
     return parsedAny;
@@ -416,174 +377,169 @@ void SortByColumn(int col, bool toggle) {
     });
 }
 
-struct FetchArgs { HWND hwnd; bool pingWorker; LONG generation; };
+// ---------------------------------------------------------------------------
+// Refresh pipeline: discover regions -> fetch queue times + ping each online
+// region. g_pendingFetches counts every outstanding result, so a new refresh
+// (which may rebuild g_regions) can only start once all work has reported in.
+// ---------------------------------------------------------------------------
+struct QueueJob { HWND hwnd; RegionEntries regions; };
+struct PingJob { HWND hwnd; int idx; std::string code; };
 
-void UpdateRegionRow(HWND hList, int regionIdx);
-
-
-static void PostFetchResult(HWND hwnd, FetchResult* result, bool completed) {
-    if (completed) {
-        InterlockedDecrement(&g_pendingFetches);
-        InterlockedIncrement(&g_completedFetches);
+static bool SubmitWork(PTP_SIMPLE_CALLBACK callback, void* context) {
+    if (!g_workGroup) {
+        g_workGroup = CreateThreadpoolCleanupGroup();
+        if (!g_workGroup) return false;
+        InitializeThreadpoolEnvironment(&g_workEnv);
+        SetThreadpoolCallbackCleanupGroup(&g_workEnv, g_workGroup, nullptr);
     }
-    if (!PostMessage(hwnd, WM_APP_REGION_DONE, 0, (LPARAM)result)) {
-        delete result;
-    }
+    return TrySubmitThreadpoolCallback(callback, context, &g_workEnv) != FALSE;
 }
 
-static bool RefreshCancelled() {
-    return g_cancelEvent && WaitForSingleObject(g_cancelEvent, 0) == WAIT_OBJECT_0;
+static void CALLBACK DiscoverRegionsWork(PTP_CALLBACK_INSTANCE, void* context) {
+    HWND hwnd = (HWND)context;
+    RegionEntries* entries = new RegionEntries;
+    if (DiscoverRegions(*entries)) {
+        SaveRegionCache(*entries);
+    } else {
+        delete entries;
+        entries = nullptr;
+    }
+    if (!PostMessageW(hwnd, WM_APP_REGIONS_DONE, 0, (LPARAM)entries)) delete entries;
 }
 
-void CloseWorkerHandles() {
-    for (int i = 0; i < g_workerCount; ++i) {
-        if (g_workerHandles[i]) {
-            CloseHandle(g_workerHandles[i]);
-            g_workerHandles[i] = nullptr;
+static void CALLBACK FetchQueuesWork(PTP_CALLBACK_INSTANCE, void* context) {
+    QueueJob* job = (QueueJob*)context;
+    std::wstring url = std::wstring(QUEUES_URL) + L"?_=" + std::to_wstring(GetTickCount64());
+    auto* snapshots = new std::vector<QueueSnapshot>(job->regions.size());
+    if (!ParseQueueResponse(HttpGet(url.c_str()), job->regions, *snapshots)) {
+        delete snapshots;
+        snapshots = nullptr;
+    }
+    if (!PostMessageW(job->hwnd, WM_APP_QUEUE_DONE, 0, (LPARAM)snapshots)) delete snapshots;
+    delete job;
+}
+
+static void CALLBACK PingWork(PTP_CALLBACK_INSTANCE, void* context) {
+    PingJob* job = (PingJob*)context;
+    int rtt = g_shuttingDown ? -1 : MeasurePing(job->code.c_str());
+    PostMessageW(job->hwnd, WM_APP_PING_DONE, (WPARAM)job->idx, (LPARAM)rtt);
+    delete job;
+}
+
+static void FinishFetch(HWND hwnd) {
+    if (--g_pendingFetches > 0) return;
+    g_refreshing = false;
+    KillTimer(hwnd, TIMER_SPINNER);
+    EnableWindow(g_hBtnRefresh, TRUE);
+    InvalidateRect(g_hBtnRefresh, nullptr, TRUE);
+}
+
+// Rebuilds the region list from a fresh discovery, keeping the user's
+// checkbox choices for regions that still exist.
+static void ApplyDiscoveredRegions(const RegionEntries& entries) {
+    RegionEntries previous;
+    for (int i = 0; i < REGION_COUNT && i < (int)g_unblockedRegions.size(); ++i) {
+        previous.emplace_back(g_regions[i].code, g_unblockedRegions[i]);
+    }
+    BuildRegions(entries);
+    DetectUnblockedRegions(); // hosts-file state for regions not seen before
+    for (int i = 0; i < REGION_COUNT; ++i) {
+        for (const auto& oldRegion : previous) {
+            if (oldRegion.first == g_regions[i].code) {
+                g_unblockedRegions[i] = oldRegion.second;
+                break;
+            }
         }
     }
-    g_workerCount = 0;
-}
-
-static DWORD WINAPI FetchThreadProc(LPVOID param) {
-    FetchArgs* args = (FetchArgs*)param;
-    HWND hwnd = args->hwnd;
-    bool pingWorker = args->pingWorker;
-    LONG generation = args->generation;
-    delete args;
-
-    HINTERNET hInternet = pingWorker ? nullptr : InternetOpenW(L"DBDRegionChanger/2.0",
-        INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
-    DWORD timeoutMs = 6000;
-    if (hInternet) {
-        DWORD maxConnections = REGION_COUNT;
-        InternetSetOptionW(hInternet, INTERNET_OPTION_MAX_CONNS_PER_SERVER,
-                           &maxConnections, sizeof(maxConnections));
-        InternetSetOptionW(hInternet, INTERNET_OPTION_MAX_CONNS_PER_1_0_SERVER,
-                           &maxConnections, sizeof(maxConnections));
-        InternetSetOptionW(hInternet, INTERNET_OPTION_CONNECT_TIMEOUT,
-                           &timeoutMs, sizeof(timeoutMs));
-        InternetSetOptionW(hInternet, INTERNET_OPTION_SEND_TIMEOUT,
-                           &timeoutMs, sizeof(timeoutMs));
-        InternetSetOptionW(hInternet, INTERNET_OPTION_RECEIVE_TIMEOUT,
-                           &timeoutMs, sizeof(timeoutMs));
-    }
-
-    LONG& nextRegion = pingWorker ? g_nextPingRegion : g_nextQueueRegion;
-    while (true) {
-        LONG idxValue = InterlockedIncrement(&nextRegion) - 1;
-        if (idxValue >= REGION_COUNT) break;
-        int idx = (int)idxValue;
-        if (RefreshCancelled()) break;
-        FetchResult* result = new FetchResult{};
-        result->idx = idx;
-        result->generation = generation;
-
-        if (pingWorker) {
-            if (!g_regions[idx].online) {
-                delete result;
-                continue;
-            }
-            int rtt = MeasurePing(g_regions[idx].code.c_str());
-            if (rtt >= 0) result->pingMs = rtt;
-            PostFetchResult(hwnd, result, true);
-        } else {
-            std::wstring queueUrl = std::wstring(QUEUES_URL) + L"?_=" +
-                std::to_wstring(GetTickCount64());
-            std::string body = HttpGet(hInternet, queueUrl.c_str());
-            QueueFetchBatch* batch = new QueueFetchBatch{ generation,
-                std::vector<QueueSnapshot>(REGION_COUNT) };
-            if (!ParseQueueResponse(body, batch->snapshots.data())) {
-                delete batch;
-                batch = nullptr;
-            }
-            delete result;
-            if (batch && !PostMessage(hwnd, WM_APP_QUEUE_DONE, 0, (LPARAM)batch)) {
-                delete batch;
-            }
-            break;
-        }
-    }
-
-    if (hInternet) InternetCloseHandle(hInternet);
-    InterlockedDecrement(&g_activeWorkers);
-    PostMessage(hwnd, WM_APP_WORKER_DONE, 0, 0);
-    return 0;
+    SortByColumn(g_sortColumn, false);
+    PopulateList(g_hList);
 }
 
 void StartRefresh(HWND hwnd) {
     if (g_refreshing) return;
-    if (REGION_COUNT <= 0) return;
-    LONG generation = InterlockedIncrement(&g_refreshGeneration);
-
-    for (int idx = 0; idx < REGION_COUNT; ++idx) ResetRegionMetrics(g_regions[idx]);
-    PopulateList(g_hList);
-    RedrawWindow(g_hList, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ERASE);
-
-    RefreshRegionStatus(g_hList);
-    if (!g_cancelEvent) g_cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (g_cancelEvent) ResetEvent(g_cancelEvent);
-    if (!g_wsaStarted) {
-        WSADATA wsaData;
-        g_wsaStarted = (WSAStartup(MAKEWORD(2, 2), &wsaData) == 0);
-    }
-    DWORD maxConnections = REGION_COUNT;
-    InternetSetOptionW(nullptr, INTERNET_OPTION_MAX_CONNS_PER_SERVER,
-                       &maxConnections, sizeof(maxConnections));
-    InternetSetOptionW(nullptr, INTERNET_OPTION_MAX_CONNS_PER_1_0_SERVER,
-                       &maxConnections, sizeof(maxConnections));
     g_refreshing = true;
     g_spinnerFrame = 0;
+    g_completedFetches = 0;
     EnableWindow(g_hBtnRefresh, FALSE);
     SetTimer(hwnd, TIMER_SPINNER, 120, nullptr);
     InvalidateRect(g_hBtnRefresh, nullptr, TRUE);
 
-    LONG onlineCount = 0;
-    for (const Region& region : g_regions) if (region.online) ++onlineCount;
-    InterlockedExchange(&g_pendingFetches, onlineCount);
-    InterlockedExchange(&g_completedFetches, 0);
-    for (int idx = 0; idx < REGION_COUNT; ++idx) ResetRegionMetrics(g_regions[idx]);
+    for (Region& region : g_regions) ResetRegionMetrics(region);
     PopulateList(g_hList);
-    RedrawWindow(g_hList, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ERASE);
-    g_workerCount = QUEUE_WORKER_COUNT + REGION_COUNT;
-    g_workerHandles.assign(g_workerCount, nullptr);
-    InterlockedExchange(&g_nextQueueRegion, 0);
-    InterlockedExchange(&g_nextPingRegion, 0);
-    InterlockedExchange(&g_activeWorkers, 0);
-    for (int workerIndex = 0; workerIndex < g_workerCount; ++workerIndex) {
-        FetchArgs* args = new FetchArgs{ hwnd, workerIndex >= QUEUE_WORKER_COUNT, generation };
-        InterlockedIncrement(&g_activeWorkers);
-        HANDLE h = CreateThread(nullptr, 128 * 1024, FetchThreadProc, args,
-            STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
-        if (h) {
-            g_workerHandles[workerIndex] = h;
-        } else {
-            InterlockedDecrement(&g_activeWorkers);
-            delete args;
-            LONG& nextRegion = workerIndex >= QUEUE_WORKER_COUNT ? g_nextPingRegion : g_nextQueueRegion;
-            while (true) {
-                LONG idxValue = InterlockedIncrement(&nextRegion) - 1;
-                if (idxValue >= REGION_COUNT) break;
-                int idx = (int)idxValue;
-                FetchResult* result = new FetchResult{};
-                result->idx = idx;
-                result->generation = generation;
-                if (workerIndex >= QUEUE_WORKER_COUNT) {
-                    if (!g_regions[idx].online) {
-                        delete result;
-                        continue;
-                    }
-                    PostFetchResult(hwnd, result, true);
-                } else {
-                    delete result;
-                    QueueFetchBatch* batch = new QueueFetchBatch{ generation,
-                        std::vector<QueueSnapshot>(REGION_COUNT) };
-                    if (!PostMessage(hwnd, WM_APP_QUEUE_DONE, 0, (LPARAM)batch)) {
-                        delete batch;
-                    }
-                    break;
-                }
-            }
+
+    if (!g_internet) {
+        g_internet = InternetOpenW(L"DBDRegionChanger/2.0", INTERNET_OPEN_TYPE_PRECONFIG,
+                                   nullptr, nullptr, 0);
+        DWORD timeoutMs = 6000;
+        if (g_internet) {
+            InternetSetOptionW(g_internet, INTERNET_OPTION_CONNECT_TIMEOUT, &timeoutMs, sizeof(timeoutMs));
+            InternetSetOptionW(g_internet, INTERNET_OPTION_SEND_TIMEOUT, &timeoutMs, sizeof(timeoutMs));
+            InternetSetOptionW(g_internet, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeoutMs, sizeof(timeoutMs));
         }
     }
+
+    g_pendingFetches = 1;
+    if (!SubmitWork(DiscoverRegionsWork, hwnd)) OnRegionsDiscovered(hwnd, nullptr);
+}
+
+void OnRegionsDiscovered(HWND hwnd, RegionEntries* entries) {
+    if (entries) {
+        ApplyDiscoveredRegions(*entries);
+        delete entries;
+    }
+    RegionEntries snapshot;
+    for (const Region& region : g_regions) snapshot.emplace_back(region.code, region.online);
+
+    if (!snapshot.empty()) {
+        QueueJob* queueJob = new QueueJob{ hwnd, snapshot };
+        ++g_pendingFetches;
+        if (!SubmitWork(FetchQueuesWork, queueJob)) {
+            delete queueJob;
+            --g_pendingFetches;
+        }
+    }
+    for (int idx = 0; idx < REGION_COUNT; ++idx) {
+        if (!g_regions[idx].online) continue;
+        PingJob* pingJob = new PingJob{ hwnd, idx, g_regions[idx].code };
+        ++g_pendingFetches;
+        if (!SubmitWork(PingWork, pingJob)) {
+            delete pingJob;
+            --g_pendingFetches;
+        }
+    }
+    FinishFetch(hwnd); // the discovery step itself
+}
+
+void OnQueueDone(HWND hwnd, std::vector<QueueSnapshot>* snapshots) {
+    bool valid = snapshots && (int)snapshots->size() == REGION_COUNT;
+    for (int idx = 0; idx < REGION_COUNT; ++idx) {
+        if (!g_regions[idx].online) continue;
+        g_regions[idx].killerSecs = valid ? (*snapshots)[idx].killerSecs : METRIC_NA;
+        g_regions[idx].survivorSecs = valid ? (*snapshots)[idx].survivorSecs : METRIC_NA;
+        UpdateRegionRow(g_hList, idx);
+    }
+    delete snapshots;
+    FinishFetch(hwnd);
+}
+
+void OnPingDone(HWND hwnd, int idx, int rtt) {
+    if (idx >= 0 && idx < REGION_COUNT) {
+        g_regions[idx].pingMs = rtt >= 0 ? rtt : METRIC_NA;
+        UpdateRegionRow(g_hList, idx);
+    }
+    ++g_completedFetches;
+    FinishFetch(hwnd);
+}
+
+// Aborts network requests and waits for all background work to finish.
+void ShutdownRefresh() {
+    g_shuttingDown = true;
+    if (g_internet) InternetCloseHandle(g_internet);
+    if (g_workGroup) {
+        CloseThreadpoolCleanupGroupMembers(g_workGroup, FALSE, nullptr);
+        CloseThreadpoolCleanupGroup(g_workGroup);
+        DestroyThreadpoolEnvironment(&g_workEnv);
+        g_workGroup = nullptr;
+    }
+    g_internet = nullptr;
 }
