@@ -4,6 +4,7 @@
 #include <winsock2.h>
 #include <windows.h>
 #include <dwmapi.h>
+#include <algorithm>
 
 #include "region_service.h"
 #include "ui.h"
@@ -30,12 +31,14 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
     // The window opens on the primary monitor, whose DPI is the system DPI.
     const int dpi = (int)GetDpiForSystem();
-    const int windowWidth = MulDiv(480, dpi, USER_DEFAULT_SCREEN_DPI);
-    const int windowHeight = MulDiv(450, dpi, USER_DEFAULT_SCREEN_DPI);
+    const int windowWidth = MulDiv(520, dpi, USER_DEFAULT_SCREEN_DPI);
+    const int windowHeight = (std::min)(MulDiv(660, dpi, USER_DEFAULT_SCREEN_DPI),
+                                        (int)(workArea.bottom - workArea.top));
     int windowX = workArea.left + ((workArea.right - workArea.left) - windowWidth) / 2;
     int windowY = workArea.top + ((workArea.bottom - workArea.top) - windowHeight) / 2;
     HWND window = CreateWindowExW(0, className, L"DBD Region Changer",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME | WS_MAXIMIZEBOX,
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME | WS_MAXIMIZEBOX |
+        WS_CLIPCHILDREN,
         windowX, windowY, windowWidth, windowHeight, nullptr, nullptr, hInst, nullptr);
     if (window) {
         BOOL useDarkTitleBar = TRUE;
@@ -47,6 +50,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
     UpdateWindow(window);
     MSG message;
     while (GetMessage(&message, nullptr, 0, 0)) {
+        if (IsDialogMessageW(window, &message)) continue; // Tab / arrow-key navigation
         TranslateMessage(&message);
         DispatchMessage(&message);
     }

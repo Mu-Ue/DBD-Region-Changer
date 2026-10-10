@@ -261,6 +261,6 @@ void DetectUnblockedRegions() {
             if (HasHostToken(q, host)) g_unblockedRegions[i] = true;
         }
     }
-    // If no managed block was found at all, leave g_unblockedRegions as-is
-    // (all false = nothing to restore, user hasn't applied changes yet)
+    // Without a managed block nothing is blocked, so every region is allowed.
+    if (!foundBlock) g_unblockedRegions.assign(REGION_COUNT, true);
 }

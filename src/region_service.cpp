@@ -31,7 +31,7 @@ std::vector<int> g_order;
 int g_sortColumn = 0;
 bool g_sortAscending = true;
 bool g_refreshing = false;
-int g_completedFetches = 0;        // UI thread only: pings finished, for the spinner text
+int g_completedFetches = 0;        // UI thread only: pings finished, for the status line
 static int g_pendingFetches = 0;   // UI thread only: outstanding discovery/queue/ping results
 
 // Background work runs on the system thread pool. Work items receive copies
@@ -436,7 +436,7 @@ static void FinishFetch(HWND hwnd) {
     }
     KillTimer(hwnd, TIMER_SPINNER);
     EnableWindow(g_hBtnRefresh, TRUE);
-    InvalidateRect(g_hBtnRefresh, nullptr, TRUE);
+    UpdateStatus();
 }
 
 // Rebuilds the region list from a fresh discovery. The pending-change
@@ -459,9 +459,9 @@ static void ApplyDiscoveredRegions(const RegionEntries& entries) {
         }
     }
     g_hasUnappliedChanges = g_unblockedRegions != g_originalUnblockedRegions;
-    InvalidateRect(g_hBtnApply, nullptr, TRUE);
     SortByColumn(g_sortColumn, false);
     PopulateList(g_hList);
+    UpdateStatus();
 }
 
 void StartRefresh(HWND hwnd) {
@@ -471,10 +471,10 @@ void StartRefresh(HWND hwnd) {
     g_completedFetches = 0;
     EnableWindow(g_hBtnRefresh, FALSE);
     SetTimer(hwnd, TIMER_SPINNER, 120, nullptr);
-    InvalidateRect(g_hBtnRefresh, nullptr, TRUE);
 
     for (Region& region : g_regions) ResetRegionMetrics(region);
     PopulateList(g_hList);
+    UpdateStatus();
 
     if (!g_internet) {
         g_internet = InternetOpenW(L"DBDRegionChanger/2.0", INTERNET_OPEN_TYPE_PRECONFIG,

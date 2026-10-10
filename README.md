@@ -20,6 +20,6 @@ The compiled `DBDRegionChanger.exe` will be produced in the project root.
 ## Usage
 
 1. Run `DBDRegionChanger.exe` as administrator
-2. Select your desired server region from the dropdown
+2. Check the regions you want to play in
 3. Click **Apply** to update the hosts file
 4. Restart Dead by Daylight for changes to take effect
