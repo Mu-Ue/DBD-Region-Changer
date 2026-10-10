@@ -599,6 +599,15 @@ static void UseDarkScrollbars(HWND hwnd) {
 }
 
 // --- Main window -----------------------------------------------------------
+// Client height at which the list fits all rows exactly. Mirrors WM_SIZE.
+int ClientHeightForRows(int rows, UINT dpi) {
+    auto scale = [dpi](int value) { return MulDiv(value, (int)dpi, USER_DEFAULT_SCREEN_DPI); };
+    int aboveList = scale(16) + scale(20) + scale(8);              // margin, hint, gap
+    int belowList = scale(8) + scale(20) + scale(10) + scale(34) + scale(16); // gap, status, gap, buttons, margin
+    int list = 2 + scale(HEADER_HEIGHT) + rows * scale(ROW_HEIGHT); // 1px frame on each side
+    return aboveList + list + belowList;
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CREATE: {

@@ -14,6 +14,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 void PopulateList(HWND hList);
 void UpdateRegionRow(HWND hList, int regionIdx);
 void UpdateStatus();
+int ClientHeightForRows(int rows, UINT dpi);
 extern bool g_hasUnappliedChanges;
 extern int g_spinnerFrame;
 extern HWND g_hList, g_hBtnRefresh, g_hBtnApply;

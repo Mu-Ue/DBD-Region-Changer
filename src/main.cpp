@@ -31,14 +31,17 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
     // The window opens on the primary monitor, whose DPI is the system DPI.
     const int dpi = (int)GetDpiForSystem();
+    const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME |
+                        WS_MAXIMIZEBOX | WS_CLIPCHILDREN;
+    // Size the window so the list ends right below its last row.
+    RECT frame = { 0, 0, 0, ClientHeightForRows(REGION_COUNT, (UINT)dpi) };
+    AdjustWindowRectExForDpi(&frame, style, FALSE, 0, (UINT)dpi);
     const int windowWidth = MulDiv(580, dpi, USER_DEFAULT_SCREEN_DPI);
-    const int windowHeight = (std::min)(MulDiv(660, dpi, USER_DEFAULT_SCREEN_DPI),
+    const int windowHeight = (std::min)((int)(frame.bottom - frame.top),
                                         (int)(workArea.bottom - workArea.top));
     int windowX = workArea.left + ((workArea.right - workArea.left) - windowWidth) / 2;
     int windowY = workArea.top + ((workArea.bottom - workArea.top) - windowHeight) / 2;
-    HWND window = CreateWindowExW(0, className, L"DBD Region Changer",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME | WS_MAXIMIZEBOX |
-        WS_CLIPCHILDREN,
+    HWND window = CreateWindowExW(0, className, L"DBD Region Changer", style,
         windowX, windowY, windowWidth, windowHeight, nullptr, nullptr, hInst, nullptr);
     if (window) {
         BOOL useDarkTitleBar = TRUE;
