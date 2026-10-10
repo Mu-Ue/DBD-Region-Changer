@@ -434,15 +434,17 @@ static void FinishFetch(HWND hwnd) {
     InvalidateRect(g_hBtnRefresh, nullptr, TRUE);
 }
 
-// Rebuilds the region list from a fresh discovery, keeping the user's
-// checkbox choices for regions that still exist.
+// Rebuilds the region list from a fresh discovery. The pending-change
+// baseline is re-read from the hosts file; the user's unapplied checkbox
+// choices are kept for regions that still exist.
 static void ApplyDiscoveredRegions(const RegionEntries& entries) {
     RegionEntries previous;
     for (int i = 0; i < REGION_COUNT && i < (int)g_unblockedRegions.size(); ++i) {
         previous.emplace_back(g_regions[i].code, g_unblockedRegions[i]);
     }
     BuildRegions(entries);
-    DetectUnblockedRegions(); // hosts-file state for regions not seen before
+    DetectUnblockedRegions();
+    g_originalUnblockedRegions = g_unblockedRegions;
     for (int i = 0; i < REGION_COUNT; ++i) {
         for (const auto& oldRegion : previous) {
             if (oldRegion.first == g_regions[i].code) {
@@ -451,6 +453,8 @@ static void ApplyDiscoveredRegions(const RegionEntries& entries) {
             }
         }
     }
+    g_hasUnappliedChanges = g_unblockedRegions != g_originalUnblockedRegions;
+    InvalidateRect(g_hBtnApply, nullptr, TRUE);
     SortByColumn(g_sortColumn, false);
     PopulateList(g_hList);
 }

@@ -116,17 +116,6 @@ void PopulateList(HWND hList) {
     }
     LayoutColumns(hList);
     g_updatingList = false;
-    // Record the original blocked/unblocked state as the baseline for pending changes
-    g_originalUnblockedRegions = g_unblockedRegions;
-}
-
-// Helper to determine if any change differs from the original state
-static bool HasPendingChanges() {
-    if (g_originalUnblockedRegions.size() != g_unblockedRegions.size()) return true;
-    for (size_t i = 0; i < g_originalUnblockedRegions.size(); ++i) {
-        if (g_originalUnblockedRegions[i] != g_unblockedRegions[i]) return true;
-    }
-    return false;
 }
 
 // Update just one region's two data cells wherever it currently sits (sorting
@@ -283,6 +272,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         SortByColumn(0, false); // default: alphabetical by region (AP, EU, NA, SA...)
 
         DetectUnblockedRegions();
+        g_originalUnblockedRegions = g_unblockedRegions; // baseline = what the hosts file holds
         PopulateList(g_hList);
         StartRefresh(hwnd);
         return 0;
@@ -391,12 +381,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     item.lParam < REGION_COUNT) {
                     bool newState = ListView_GetCheckState(g_hList, lv->iItem) != FALSE;
                     g_unblockedRegions[(int)item.lParam] = newState;
-                        // Determine whether there are any pending changes compared to the original snapshot
-                        bool pending = HasPendingChanges();
-                        // Update the global flag accordingly
-                        g_hasUnappliedChanges = pending;
-                        // Update the Apply button to reflect changed state
-                        InvalidateRect(g_hBtnApply, nullptr, TRUE);
+                    g_hasUnappliedChanges = g_unblockedRegions != g_originalUnblockedRegions;
+                    InvalidateRect(g_hBtnApply, nullptr, TRUE);
                 }
             }
         }
@@ -453,7 +439,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             std::wstring err;
             if (ApplyRegions(g_unblockedRegions, err)) {
                 g_applyFlash = true;
-                g_hasUnappliedChanges = false; // Clear the unapplied changes flag
+                g_originalUnblockedRegions = g_unblockedRegions;
+                g_hasUnappliedChanges = false;
                 InvalidateRect(g_hBtnApply, nullptr, TRUE);
                 SetTimer(hwnd, TIMER_APPLY_FLASH, 1200, nullptr);
             } else {
