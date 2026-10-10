@@ -410,6 +410,10 @@ static LRESULT CALLBACK HeaderSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, L
         hti.pt.y = GET_Y_LPARAM(lParam);
         SendMessage(hwnd, HDM_HITTEST, 0, (LPARAM)&hti);
         if (hti.flags & (HHT_ONDIVIDER | HHT_ONDIVOPEN)) return 0; // eat it -- no drag, no auto-fit
+        // A quick second click arrives as a double-click, which the header
+        // doesn't report as a column click. Pass it on as a plain press so
+        // every click sorts, however fast.
+        if (msg == WM_LBUTTONDBLCLK) return DefSubclassProc(hwnd, WM_LBUTTONDOWN, wParam, lParam);
     }
     return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
