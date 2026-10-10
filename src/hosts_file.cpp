@@ -113,11 +113,14 @@ static bool OverwriteFileFromTemp(const wchar_t* tempPath, const wchar_t* target
 }
 
 static void FlushDnsCache() {
+    // Absolute path: a bare "ipconfig.exe" is searched for in the app directory
+    // first, which would let a planted executable run elevated.
+    std::wstring application = SystemPath(L"\\ipconfig.exe");
     wchar_t commandLine[] = L"ipconfig.exe /flushdns";
     STARTUPINFOW startup = {};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process = {};
-    if (!CreateProcessW(nullptr, commandLine, nullptr, nullptr, FALSE,
+    if (!CreateProcessW(application.c_str(), commandLine, nullptr, nullptr, FALSE,
                         CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) return;
     WaitForSingleObject(process.hProcess, 5000);
     CloseHandle(process.hThread);

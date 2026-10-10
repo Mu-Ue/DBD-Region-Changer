@@ -8,6 +8,9 @@
 #include "ui.h"
 
 int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
+    // The process runs elevated, so never load DLLs from the app directory
+    // (typically Downloads). Covers the delay-loaded network DLLs.
+    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
     InitializeRegions();
 
     const wchar_t* className = L"DBDRegionChangerWnd2";
