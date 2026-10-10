@@ -6,6 +6,10 @@ A lightweight Windows desktop tool for changing your Dead by Daylight server reg
 
 ![Screenshot](docs/screenshot.png)
 
+## Download
+
+Get the latest [DBDRegionChanger.exe](https://github.com/Mu-Ue/DBD-Region-Changer/releases/latest/download/DBDRegionChanger.exe) from the [releases page](https://github.com/Mu-Ue/DBD-Region-Changer/releases).
+
 ## Requirements
 
 - Windows 10 or later
