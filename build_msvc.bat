@@ -46,7 +46,7 @@ REM /OPT:REF,ICF = strip unused code and fold duplicate functions.
 REM /GS, /sdl, /guard:cf, ASLR, and NXCOMPAT enable release hardening.
 REM /DEPENDENTLOADFLAG:0x800 resolves static imports from System32 only.
 
-cl -Iinclude /O1 /Os /GL /GS /sdl /guard:cf /EHsc /std:c++17 /DNDEBUG ^
+cl -Iinclude /W4 /permissive- /O1 /Os /GL /GS /sdl /guard:cf /EHsc /std:c++17 /DNDEBUG ^
     src\main.cpp src\ui.cpp src\region_service.cpp src\hosts_file.cpp ^
     resources\app.res ^
     user32.lib gdi32.lib comctl32.lib wininet.lib uxtheme.lib dwmapi.lib ws2_32.lib iphlpapi.lib advapi32.lib ^
