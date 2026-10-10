@@ -26,7 +26,7 @@ int g_spinnerFrame = 0;
 static bool g_justApplied = false;  // shows the restart hint until the next change
 static bool g_trackingList = false; // TME_LEAVE requested for the list
 static int g_hoverRow = -1;
-static RECT g_hintRect, g_statusRect, g_listFrame;
+static RECT g_statusRect, g_listFrame;
 static UINT g_dpi = USER_DEFAULT_SCREEN_DPI;
 static ULONG_PTR g_gdiplusToken = 0;
 
@@ -602,7 +602,7 @@ static void UseDarkScrollbars(HWND hwnd) {
 // Client height at which the list fits all rows exactly. Mirrors WM_SIZE.
 int ClientHeightForRows(int rows, UINT dpi) {
     auto scale = [dpi](int value) { return MulDiv(value, (int)dpi, USER_DEFAULT_SCREEN_DPI); };
-    int aboveList = scale(16) + scale(20) + scale(8);              // margin, hint, gap
+    int aboveList = scale(16);                                     // margin
     int belowList = scale(8) + scale(20) + scale(10) + scale(34) + scale(16); // gap, status, gap, buttons, margin
     int list = 2 + scale(HEADER_HEIGHT) + rows * scale(ROW_HEIGHT); // 1px frame on each side
     return aboveList + list + belowList;
@@ -663,8 +663,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
-        DrawLabel(hdc, L"Check the regions you want to play in, then click Apply.",
-                  g_hintRect, g_fontUI, CLR_TEXT_DIM, DT_LEFT);
         SetDCBrushColor(hdc, CLR_BORDER);
         FrameRect(hdc, &g_listFrame, (HBRUSH)GetStockObject(DC_BRUSH));
         PaintStatus(hdc);
@@ -689,9 +687,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         int buttonW = Scale(150);
         int buttonY = height - margin - buttonH;
 
-        g_hintRect = { margin, margin, width - margin, margin + textH };
         g_statusRect = { margin, buttonY - Scale(10) - textH, width - margin, buttonY - Scale(10) };
-        g_listFrame = { margin, g_hintRect.bottom + Scale(8), width - margin, g_statusRect.top - Scale(8) };
+        g_listFrame = { margin, margin, width - margin, g_statusRect.top - Scale(8) };
         if (g_hList) {
             MoveWindow(g_hList, g_listFrame.left + 1, g_listFrame.top + 1,
                        g_listFrame.right - g_listFrame.left - 2, g_listFrame.bottom - g_listFrame.top - 2, TRUE);
